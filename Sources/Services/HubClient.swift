@@ -324,7 +324,15 @@ final class HubClient: ObservableObject {
     func buildKleinanzeigenURL(query: String, minPrice: Int, maxPrice: Int, radiusKm: Int, category: String) async -> String? {
         struct Req: Encodable { let query: String; let min_price: Int; let max_price: Int; let radius_km: Int; let category: String }
         struct Res: Decodable { let url: String }
-        return try? await sendJSON("\(dealBaseURL)/api/build-url", body: Req(query: query, min_price: minPrice, max_price: maxPrice, radius_km: radiusKm, category: category)).url
+        do {
+            let res: Res = try await sendJSON(
+                "\(dealBaseURL)/api/build-url",
+                body: Req(query: query, min_price: minPrice, max_price: maxPrice, radius_km: radiusKm, category: category)
+            )
+            return res.url
+        } catch {
+            return nil
+        }
     }
 
     func updateQuickPrice(index: Int, minPrice: Double, maxPrice: Double) async -> Bool {
