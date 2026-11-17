@@ -1,0 +1,61 @@
+name: Build HomeHub iOS IPA
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Build unsigned HomeHub.app (arm64 iOS)
+        run: |
+          xcodebuild \
+            -project HomeHub.xcodeproj \
+            -scheme HomeHub \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=NO \
+            clean build
+
+      - name: Package HomeHub.ipa for SideStore / iloader
+        run: |
+          mkdir -p dist/Payload
+          cp -R build/Build/Products/Release-iphoneos/HomeHub.app dist/Payload/
+          cd dist
+          zip -qry ../HomeHub.ipa Payload
+          ls -lh ../HomeHub.ipa
+
+      - name: Upload HomeHub.ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HomeHub-iOS-IPA
+          path: HomeHub.ipa
+          retention-days: 90
+
+      - name: Publish Release with HomeHub.ipa
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: HomeHub v1.0.${{ github.run_number }}
+          body: "Automatisch gebaute HomeHub.ipa (JellyControl + Deal Radar) bereit für SideStore / iloader."
+          files: HomeHub.ipa
