@@ -4,6 +4,14 @@ import SwiftUI
 struct HomeHubApp: App {
     @StateObject private var client = HubClient()
 
+    init() {
+        let tabAppearance = UITabBarAppearance()
+        tabAppearance.configureWithOpaqueBackground()
+        tabAppearance.backgroundColor = UIColor(red: 0.04, green: 0.06, blue: 0.11, alpha: 0.96)
+        UITabBar.appearance().standardAppearance = tabAppearance
+        UITabBar.appearance().scrollEdgeAppearance = tabAppearance
+    }
+
     var body: some Scene {
         WindowGroup {
             RootTabView()
@@ -26,33 +34,43 @@ struct RootTabView: View {
                     }
                     .tag(0)
 
-                DealRadarView()
+                DealRadarView(switchToDevicesTab: { selectedTab = 2 })
                     .tabItem {
                         Label("Deal Radar", systemImage: "tag.fill")
                     }
                     .badge(client.dealState?.stats.activeDeals ?? 0)
                     .tag(1)
 
-                SystemView()
+                DeviceManagerTabView()
                     .tabItem {
-                        Label("System", systemImage: "slider.horizontal.3")
+                        Label("Geräte", systemImage: "slider.horizontal.below.rectangle")
                     }
                     .tag(2)
+
+                SystemView()
+                    .tabItem {
+                        Label("System & JIT", systemImage: "cpu.fill")
+                    }
+                    .tag(3)
             }
-            .tint(.cyan)
+            .tint(HubTheme.sky)
 
             if let toast = client.toastMessage {
-                Text(toast)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .overlay(Capsule().stroke(Color.cyan.opacity(0.45), lineWidth: 1))
-                    .shadow(color: .black.opacity(0.45), radius: 12, y: 6)
-                    .padding(.top, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .zIndex(99)
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .foregroundStyle(HubTheme.sky)
+                    Text(toast)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(HubTheme.cardElevated, in: Capsule())
+                .overlay(Capsule().stroke(HubTheme.sky.opacity(0.55), lineWidth: 1))
+                .shadow(color: .black.opacity(0.5), radius: 14, y: 6)
+                .padding(.top, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .zIndex(99)
             }
         }
         .task {
@@ -61,7 +79,8 @@ struct RootTabView: View {
             async let d: () = client.refreshDealState()
             async let c: () = client.fetchDealConfig()
             async let a: () = client.checkAnisetteHealth()
-            _ = await (j, d, c, a)
+            async let s: () = client.checkSideJIT()
+            _ = await (j, d, c, a, s)
         }
     }
 }

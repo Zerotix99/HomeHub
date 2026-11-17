@@ -1,5 +1,354 @@
 import SwiftUI
 
+struct DeviceManagerTabView: View {
+    @EnvironmentObject var client: HubClient
+    @Environment(\.openURL) private var openURL
+
+    @State private var showQuickAdd = false
+    @State private var deleteTargetIndex: Int?
+    @State private var deleteTargetName: String = ""
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 14) {
+                    // Header Banner
+                    HStack(spacing: 12) {
+                        IconBadge(symbol: "slider.horizontal.below.rectangle", colors: [HubTheme.emerald, HubTheme.sky], size: 42, iconSize: 19)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Überwachte Geräte & Preisspannen")
+                                .font(.system(size: 15, weight: .heavy))
+                            Text("Ändere Min/Max-Preise direkt oder füge neue Suchaufträge hinzu.")
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(14)
+                    .hubCard(cornerRadius: 18)
+
+                    // Add New Device Button
+                    Button {
+                        Haptics.light()
+                        showQuickAdd = true
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.title3.bold())
+                            Text("Neues Gerät zur Überwachung hinzufügen")
+                                .font(.system(size: 14, weight: .heavy))
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption.bold())
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 13)
+                        .background(LinearGradient(colors: [HubTheme.emerald, .teal], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 16))
+                        .foregroundStyle(.white)
+                        .shadow(color: HubTheme.emerald.opacity(0.3), radius: 10, y: 4)
+                    }
+                    .buttonStyle(.plain)
+
+                    // List of Device Cards
+                    if let searches = client.dealConfig?.searches, !searches.isEmpty {
+                        ForEach(Array(searches.enumerated()), id: \.offset) { idx, rule in
+                            DeviceRuleCard(
+                                index: idx,
+                                rule: rule,
+                                onSavePrice: { minP, maxP in
+                                    Task {
+                                        _ = await client.updateQuickPrice(index: idx, minPrice: minP, maxPrice: maxP)
+                                        await client.refreshDealState()
+                                    }
+                                },
+                                onToggleEnabled: { newVal in
+                                    Task {
+                                        guard var cfg = client.dealConfig, idx < cfg.searches.count else { return }
+                                        cfg.searches[idx].enabled = newVal
+                                        if await client.saveDealConfig(cfg) {
+                                            client.showToast(newVal ? "▶ \(rule.name) aktiviert" : "⏸ \(rule.name) pausiert")
+                                            await client.refreshDealState()
+                                        }
+                                    }
+                                },
+                                onDeepScan: {
+                                    Task {
+                                        await client.triggerDealScan(deep: true, searchName: rule.name)
+                                    }
+                                },
+                                onOpenURL: {
+                                    if let u = URL(string: rule.url) { openURL(u) }
+                                },
+                                onDelete: {
+                                    Haptics.warning()
+                                    deleteTargetIndex = idx
+                                    deleteTargetName = rule.name
+                                }
+                            )
+                        }
+                    } else {
+                        VStack(spacing: 10) {
+                            Image(systemName: "magnifyingglass.circle.fill")
+                                .font(.system(size: 38))
+                                .foregroundStyle(HubTheme.sky)
+                            Text("Keine Geräte geladen")
+                                .font(.headline)
+                            Text("Ziehe nach unten zum Aktualisieren oder füge oben ein neues Gerät hinzu.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 40)
+                        .hubCard(cornerRadius: 18)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 6)
+                .padding(.bottom, 30)
+            }
+            .background(HubTheme.bg.ignoresSafeArea())
+            .navigationTitle("Geräte & Preise")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        Haptics.light()
+                        showQuickAdd = true
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(HubTheme.emerald)
+                    }
+                }
+            }
+            .refreshable {
+                await client.fetchDealConfig()
+                await client.refreshDealState()
+            }
+            .task {
+                await client.fetchDealConfig()
+            }
+            .sheet(isPresented: $showQuickAdd) {
+                QuickAddDeviceSheet(onSaved: {
+                    Task {
+                        await client.fetchDealConfig()
+                        await client.refreshDealState()
+                    }
+                })
+            }
+            .confirmationDialog(
+                "🗑 \"\(deleteTargetName)\" entfernen?",
+                isPresented: Binding(
+                    get: { deleteTargetIndex != nil },
+                    set: { if !$0 { deleteTargetIndex = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("Nur Überwachung löschen", role: .destructive) {
+                    if let idx = deleteTargetIndex {
+                        Task { _ = await client.deleteSearchRule(index: idx, deleteAds: false) }
+                    }
+                }
+                Button("Gerät + alle gespeicherten Deals löschen", role: .destructive) {
+                    if let idx = deleteTargetIndex {
+                        Task { _ = await client.deleteSearchRule(index: idx, deleteAds: true) }
+                    }
+                }
+                Button("Abbrechen", role: .cancel) {}
+            } message: {
+                Text("Das Gerät wird sofort aus deiner Pi-Konfiguration gelöscht und nicht mehr gescannt.")
+            }
+        }
+    }
+}
+
+private struct DeviceRuleCard: View {
+    let index: Int
+    let rule: SearchRule
+    let onSavePrice: (Double, Double) -> Void
+    let onToggleEnabled: (Bool) -> Void
+    let onDeepScan: () -> Void
+    let onOpenURL: () -> Void
+    let onDelete: () -> Void
+
+    @State private var minVal: Int = 0
+    @State private var maxVal: Int = 500
+    @State private var isOn: Bool = true
+
+    private var deviceSymbol: String {
+        let low = rule.name.lowercased()
+        if low.contains("iphone") || low.contains("pixel") || low.contains("galaxy") { return "iphone" }
+        if low.contains("ipad") || low.contains("tablet") { return "ipad" }
+        if low.contains("macbook") || low.contains("thinkpad") || low.contains("laptop") { return "laptopcomputer" }
+        if low.contains("switch") || low.contains("steam") || low.contains("ps5") || low.contains("playstation") { return "gamecontroller.fill" }
+        if low.contains("rtx") || low.contains("gpu") || low.contains("rx ") { return "cpu.fill" }
+        return "tag.fill"
+    }
+
+    private var badgeColors: [Color] {
+        if !isOn { return [.gray, .gray.opacity(0.6)] }
+        if rule.conditionMode == "defective_only" { return [HubTheme.amber, HubTheme.rose] }
+        return [HubTheme.sky, HubTheme.indigo]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                IconBadge(symbol: deviceSymbol, colors: badgeColors, size: 38, iconSize: 17)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(rule.name)
+                        .font(.system(size: 15, weight: .heavy))
+                        .foregroundStyle(isOn ? .white : .secondary)
+                    HStack(spacing: 6) {
+                        Text(rule.conditionMode == "defective_only" ? "🔧 Defekt / Bastler" : (rule.conditionMode == "any" ? "🎯 Alle Zustände" : "✅ Funktionierend"))
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(rule.conditionMode == "defective_only" ? HubTheme.amber : HubTheme.emerald)
+                        Text("• \(minVal)–\(maxVal) €")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(HubTheme.sky)
+                    }
+                }
+
+                Spacer()
+
+                Toggle("", isOn: $isOn)
+                    .labelsHidden()
+                    .tint(HubTheme.emerald)
+                    .onChange(of: isOn) { _, newVal in
+                        if newVal != rule.isEnabled {
+                            onToggleEnabled(newVal)
+                        }
+                    }
+            }
+
+            // Quick Price Editor Row with +/- Steppers & Direct Number Input
+            HStack(spacing: 8) {
+                priceBox(title: "MIN €", value: $minVal, step: 10)
+                priceBox(title: "MAX €", value: $maxVal, step: 10)
+
+                Button {
+                    Haptics.medium()
+                    onSavePrice(Double(minVal), Double(maxVal))
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 15, weight: .bold))
+                        Text("Speichern")
+                            .font(.system(size: 10, weight: .heavy))
+                    }
+                    .frame(width: 74, height: 48)
+                    .background(LinearGradient(colors: [HubTheme.sky, HubTheme.indigo], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 12))
+                    .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+            }
+
+            // Bottom Action Bar
+            HStack(spacing: 8) {
+                Button {
+                    onDeepScan()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "sparkle.magnifyingglass")
+                        Text("Alle Seiten scannen")
+                    }
+                    .font(.system(size: 11.5, weight: .bold))
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 7)
+                    .background(HubTheme.indigo.opacity(0.22), in: RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(HubTheme.indigo.opacity(0.5), lineWidth: 1))
+                    .foregroundStyle(Color(red: 0.78, green: 0.82, blue: 1.0))
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    onOpenURL()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "safari")
+                        Text("Link")
+                    }
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Button {
+                    onDelete()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "trash.fill")
+                        Text("Löschen")
+                    }
+                    .font(.system(size: 11.5, weight: .bold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(HubTheme.rose.opacity(0.18), in: RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(HubTheme.rose.opacity(0.45), lineWidth: 1))
+                    .foregroundStyle(HubTheme.rose)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(14)
+        .hubCard(cornerRadius: 18, highlight: isOn ? nil : .gray.opacity(0.2))
+        .onAppear {
+            minVal = Int((rule.minPrice ?? 0).rounded())
+            maxVal = Int((rule.maxPrice ?? 500).rounded())
+            isOn = rule.isEnabled
+        }
+    }
+
+    private func priceBox(title: String, value: Binding<Int>, step: Int) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 9, weight: .heavy))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Button {
+                    Haptics.light()
+                    value.wrappedValue = max(0, value.wrappedValue - step)
+                } label: {
+                    Image(systemName: "minus")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 22, height: 26)
+                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+
+                TextField("0", value: value, format: .number)
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.center)
+                    .font(.system(size: 13.5, weight: .heavy))
+                    .frame(maxWidth: .infinity)
+
+                Button {
+                    Haptics.light()
+                    value.wrappedValue += step
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 22, height: 26)
+                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity)
+        .background(HubTheme.bg.opacity(0.65), in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).stroke(HubTheme.border, lineWidth: 1))
+    }
+}
+
 struct QuickAddDeviceSheet: View {
     @EnvironmentObject var client: HubClient
     @Environment(\.dismiss) private var dismiss
@@ -49,7 +398,7 @@ struct QuickAddDeviceSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Schnell-Vorlagen") {
+                Section("Schnell-Vorlagen (1-Tap)") {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             presetBtn("📱 iPhone", q: "iPhone 15", min: 150, max: 480, r: 75, c: "phones", neg: "hülle, case, panzerglas, folie")
@@ -110,7 +459,7 @@ struct QuickAddDeviceSheet: View {
                     Section("Generierte Kleinanzeigen-URL") {
                         Text(previewURL)
                             .font(.caption2.monospaced())
-                            .foregroundStyle(.cyan)
+                            .foregroundStyle(HubTheme.sky)
                         Button {
                             if let u = URL(string: previewURL) { openURL(u) }
                         } label: {
@@ -220,208 +569,6 @@ struct QuickAddDeviceSheet: View {
             }
             onSaved()
             dismiss()
-        }
-    }
-}
-
-struct DeviceManagerSheet: View {
-    @EnvironmentObject var client: HubClient
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
-    let onChanged: () -> Void
-
-    @State private var showQuickAdd = false
-    @State private var deleteTargetIndex: Int?
-    @State private var deleteTargetName: String = ""
-    @State private var deleteAlsoAds = false
-
-    var body: some View {
-        NavigationStack {
-            List {
-                if let searches = client.dealConfig?.searches, !searches.isEmpty {
-                    ForEach(Array(searches.enumerated()), id: \.offset) { idx, rule in
-                        DeviceRuleRow(
-                            index: idx,
-                            rule: rule,
-                            onSavePrice: { minP, maxP in
-                                Task {
-                                    if await client.updateQuickPrice(index: idx, minPrice: minP, maxPrice: maxP) {
-                                        onChanged()
-                                    }
-                                }
-                            },
-                            onToggleEnabled: { newVal in
-                                Task {
-                                    guard var cfg = client.dealConfig, idx < cfg.searches.count else { return }
-                                    cfg.searches[idx].enabled = newVal
-                                    if await client.saveDealConfig(cfg) {
-                                        client.showToast(newVal ? "▶ Aktiviert" : "⏸ Pausiert")
-                                        onChanged()
-                                    }
-                                }
-                            },
-                            onDeepScan: {
-                                Task {
-                                    await client.triggerDealScan(deep: true, searchName: rule.name)
-                                    dismiss()
-                                }
-                            },
-                            onOpenURL: {
-                                if let u = URL(string: rule.url) { openURL(u) }
-                            },
-                            onDelete: {
-                                deleteTargetIndex = idx
-                                deleteTargetName = rule.name
-                                deleteAlsoAds = false
-                            }
-                        )
-                    }
-                } else {
-                    ContentUnavailableView("Keine Geräte", systemImage: "magnifyingglass", description: Text("Tippe oben rechts auf +, um ein Gerät hinzuzufügen."))
-                }
-            }
-            .navigationTitle("Geräte & Preise")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Fertig") { dismiss() }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showQuickAdd = true
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .foregroundStyle(.green)
-                    }
-                }
-            }
-            .task {
-                await client.fetchDealConfig()
-            }
-            .sheet(isPresented: $showQuickAdd) {
-                QuickAddDeviceSheet(onSaved: {
-                    Task {
-                        await client.fetchDealConfig()
-                        onChanged()
-                    }
-                })
-            }
-            .confirmationDialog(
-                "\"\(deleteTargetName)\" löschen?",
-                isPresented: Binding(
-                    get: { deleteTargetIndex != nil },
-                    set: { if !$0 { deleteTargetIndex = nil } }
-                ),
-                titleVisibility: .visible
-            ) {
-                Button("Nur Überwachung löschen", role: .destructive) {
-                    if let idx = deleteTargetIndex {
-                        Task {
-                            _ = await client.deleteSearchRule(index: idx, deleteAds: false)
-                            onChanged()
-                        }
-                    }
-                }
-                Button("Gerät + alle Deals löschen", role: .destructive) {
-                    if let idx = deleteTargetIndex {
-                        Task {
-                            _ = await client.deleteSearchRule(index: idx, deleteAds: true)
-                            onChanged()
-                        }
-                    }
-                }
-                Button("Abbrechen", role: .cancel) {}
-            } message: {
-                Text("Das Gerät wird aus deiner Pi-Konfiguration entfernt und nicht mehr gescannt.")
-            }
-        }
-    }
-}
-
-private struct DeviceRuleRow: View {
-    let index: Int
-    let rule: SearchRule
-    let onSavePrice: (Double, Double) -> Void
-    let onToggleEnabled: (Bool) -> Void
-    let onDeepScan: () -> Void
-    let onOpenURL: () -> Void
-    let onDelete: () -> Void
-
-    @State private var minStr: String = ""
-    @State private var maxStr: String = ""
-    @State private var isOn: Bool = true
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(rule.name).font(.headline)
-                    Text(rule.conditionMode == "defective_only" ? "🔧 Defekt / Bastler" : (rule.conditionMode == "any" ? "🎯 Alle Zustände" : "✅ Funktionierend"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Toggle("", isOn: $isOn)
-                    .labelsHidden()
-                    .onChange(of: isOn) { _, newVal in
-                        if newVal != rule.isEnabled { onToggleEnabled(newVal) }
-                    }
-            }
-
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Min €").font(.caption2).foregroundStyle(.secondary)
-                    TextField("0", text: $minStr)
-                        .keyboardType(.numberPad)
-                        .textFieldStyle(.roundedBorder)
-                }
-                Text("–").foregroundStyle(.secondary).padding(.top, 14)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Max €").font(.caption2).foregroundStyle(.secondary)
-                    TextField("500", text: $maxStr)
-                        .keyboardType(.numberPad)
-                        .textFieldStyle(.roundedBorder)
-                }
-                Button("Speichern") {
-                    let minP = Double(minStr) ?? (rule.minPrice ?? 0)
-                    let maxP = Double(maxStr) ?? (rule.maxPrice ?? 500)
-                    onSavePrice(minP, maxP)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.blue)
-                .font(.caption.bold())
-                .padding(.top, 14)
-            }
-
-            HStack(spacing: 8) {
-                Button { onDeepScan() } label: {
-                    Label("Alle Seiten", systemImage: "magnifyingglass")
-                        .font(.caption.weight(.semibold))
-                }
-                .buttonStyle(.bordered)
-                .tint(.indigo)
-
-                Button { onOpenURL() } label: {
-                    Label("Öffnen", systemImage: "safari")
-                        .font(.caption.weight(.semibold))
-                }
-                .buttonStyle(.bordered)
-
-                Spacer()
-
-                Button(role: .destructive) { onDelete() } label: {
-                    Label("Löschen", systemImage: "trash")
-                        .font(.caption.weight(.semibold))
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
-            }
-        }
-        .padding(.vertical, 6)
-        .onAppear {
-            minStr = String(Int((rule.minPrice ?? 0).rounded()))
-            maxStr = String(Int((rule.maxPrice ?? 500).rounded()))
-            isOn = rule.isEnabled
         }
     }
 }

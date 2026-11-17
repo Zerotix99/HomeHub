@@ -5,7 +5,7 @@ struct JellyControlView: View {
     @EnvironmentObject var client: HubClient
     @Environment(\.openURL) private var openURL
     @State private var showShutdownConfirm = false
-    @State private var selectedModeServer = true
+    @State private var pulseOrb = false
 
     private var status: JellyStatusResponse? { client.jellyStatus }
     private var daemon: DaemonData? { status?.daemonData }
@@ -14,55 +14,67 @@ struct JellyControlView: View {
 
     private var stateAccent: Color {
         guard let status else { return .gray }
-        if isOnline { return isServerMode ? .green : .purple }
-        if status.pcOnline { return .orange }
-        return .red
+        if isOnline { return isServerMode ? HubTheme.emerald : HubTheme.purple }
+        if status.pcOnline { return HubTheme.amber }
+        return HubTheme.rose
     }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    heroCard
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 14) {
+                    PiGatewayBar()
 
-                    if isOnline {
-                        onlineControls
-                    } else {
-                        wakeButton
-                    }
+                    heroStatusCard
+
+                    actionDeck
 
                     if isOnline, let hw = daemon?.hardware {
-                        hardwareSection(hw)
+                        hardwareTelemetryCard(hw)
                     }
 
-                    servicesSection
+                    servicesGridSection
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 28)
+                .padding(.horizontal, 14)
+                .padding(.top, 6)
+                .padding(.bottom, 30)
             }
             .background(
-                LinearGradient(
-                    colors: [stateAccent.opacity(0.18), Color(red: 0.03, green: 0.04, blue: 0.08)],
-                    startPoint: .top,
-                    endPoint: .center
-                )
-                .ignoresSafeArea()
+                ZStack {
+                    HubTheme.bg.ignoresSafeArea()
+                    RadialGradient(
+                        colors: [stateAccent.opacity(0.22), .clear],
+                        center: .top,
+                        startRadius: 10,
+                        endRadius: 380
+                    )
+                    .ignoresSafeArea()
+                }
             )
-            .navigationTitle("JellyControl")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationTitle("JellyControl Pro")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 10) {
-                        Label(client.activeRouteLabel, systemImage: client.activeRouteLabel == "WLAN" ? "wifi" : "network")
-                            .font(.caption.weight(.semibold))
+                ToolbarItem(placement: .topBarLeading) {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(client.isConnected ? HubTheme.emerald : HubTheme.rose)
+                            .frame(width: 8, height: 8)
+                        Text(client.activeRouteLabel)
+                            .font(.caption.weight(.bold))
                             .foregroundStyle(.secondary)
-                        Button {
-                            Haptics.light()
-                            Task { await client.refreshJelly() }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        Haptics.light()
+                        Task {
+                            await client.refreshJelly()
+                            await client.checkSideJIT()
                         }
+                    } label: {
+                        Image(systemName: "arrow.clockwise.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(HubTheme.sky)
                     }
                 }
             }
@@ -70,200 +82,272 @@ struct JellyControlView: View {
                 await client.refreshJelly()
             }
             .confirmationDialog(
-                "PC in Ruhezustand versetzen?",
+                "💤 PC in Ruhezustand versetzen?",
                 isPresented: $showShutdownConfirm,
                 titleVisibility: .visible
             ) {
                 Button("Ruhezustand (0W Standby)", role: .destructive) {
-                    Task { await client.sendJellyAction("/api/shutdown", fallbackMsg: "PC geht in Ruhezustand…") }
+                    Task { await client.sendJellyAction("/api/shutdown", fallbackMsg: "PC geht in Ruhezustand (0W)…") }
                 }
                 Button("Abbrechen", role: .cancel) {}
             } message: {
-                Text("Die SmartLife-Steckdose bleibt eingeschaltet. Deine Windows-Sitzung bleibt gespeichert und kann jederzeit per Wake-on-LAN geweckt werden.")
+                Text("Der PC wechselt sauber in den 0W-Ruhezustand (Hibernate). Die SmartLife-Steckdose bleibt an, deine Sitzung bleibt erhalten und du kannst ihn jederzeit per Wake-on-LAN wecken.")
+            }
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 2.2).repeatForever(autoreverses: true)) {
+                pulseOrb = true
             }
         }
         .task {
             while !Task.isCancelled {
                 await client.refreshJelly()
-                if let sm = client.jellyStatus?.daemonData?.serverMode {
-                    selectedModeServer = sm
-                }
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                try? await Task.sleep(nanoseconds: 3_500_000_000)
             }
         }
     }
 
-    // MARK: - Hero Card
+    // MARK: - Hero Status Card
 
-    private var heroCard: some View {
+    private var heroStatusCard: some View {
         VStack(spacing: 14) {
             ZStack {
                 Circle()
-                    .fill(stateAccent.opacity(0.22))
-                    .frame(width: 82, height: 82)
+                    .fill(stateAccent.opacity(0.18))
+                    .frame(width: 88, height: 88)
+                    .scaleEffect(pulseOrb ? 1.08 : 0.94)
+
                 Circle()
-                    .fill(stateAccent.gradient)
-                    .frame(width: 60, height: 60)
-                    .shadow(color: stateAccent.opacity(0.55), radius: 14)
+                    .stroke(stateAccent.opacity(0.45), lineWidth: 2)
+                    .frame(width: 72, height: 72)
+
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: isOnline
+                                ? (isServerMode ? [HubTheme.emerald, Color.teal] : [HubTheme.purple, HubTheme.pink])
+                                : (status?.pcOnline == true ? [HubTheme.amber, .orange] : [HubTheme.rose, Color.red.opacity(0.7)]),
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 58, height: 58)
+                    .shadow(color: stateAccent.opacity(0.6), radius: 16)
+
                 Image(systemName: heroSymbol)
-                    .font(.system(size: 26, weight: .bold))
+                    .font(.system(size: 25, weight: .bold))
                     .foregroundStyle(.white)
             }
 
             VStack(spacing: 4) {
                 Text(heroTitle)
-                    .font(.title2.bold())
+                    .font(.system(size: 21, weight: .heavy))
                 Text(heroSubtitle)
-                    .font(.subheadline)
+                    .font(.system(size: 12.5))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
 
-            // Status Pills
-            HStack(spacing: 8) {
-                if let lat = status?.latencyMs, status?.pcOnline == true {
-                    statusPill("\(Int(lat.rounded())) ms", color: .green)
-                }
-                if let d = daemon {
-                    statusPill(d.nordvpn == true ? "VPN AN" : "VPN AUS", color: d.nordvpn == true ? .green : .red)
-                    if let up = d.uptimeSeconds {
-                        statusPill("Up \(formatUptime(up))", color: .cyan)
+            // Status Chips Row (just like Web Dashboard!)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    GlowChip(
+                        text: daemon?.hostname ?? (status?.pcOnline == true ? "Lockscreen" : "PC Offline"),
+                        dotColor: isOnline ? HubTheme.emerald : (status?.pcOnline == true ? HubTheme.amber : HubTheme.rose),
+                        icon: "desktopcomputer"
+                    )
+                    GlowChip(
+                        text: isOnline ? (isServerMode ? "HomeServer" : "Gaming") : "Standby",
+                        dotColor: isOnline ? (isServerMode ? HubTheme.emerald : HubTheme.purple) : HubTheme.rose,
+                        icon: isServerMode ? "server.rack" : "gamecontroller.fill"
+                    )
+                    GlowChip(
+                        text: daemon?.nordvpn == true ? "VPN \(daemon?.nordvpnIp ?? "AN")" : "VPN AUS",
+                        dotColor: daemon?.nordvpn == true ? HubTheme.emerald : HubTheme.rose,
+                        icon: "shield.lefthalf.filled"
+                    )
+                    if let lat = status?.latencyMs, status?.pcOnline == true {
+                        GlowChip(text: "\(Int(lat.rounded())) ms", dotColor: HubTheme.emerald, icon: "bolt.horizontal.fill")
                     }
-                    if d.screenLocked == true {
-                        statusPill("Gesperrt", color: .orange)
+                    if let up = daemon?.uptimeSeconds {
+                        GlowChip(text: "Up \(formatUptime(up))", dotColor: HubTheme.sky, icon: "clock.fill")
                     }
                 }
             }
 
-            // 4 Live Metrics
+            // 4 Mini Hardware Gauges
             let hw = daemon?.hardware
             let watt = isOnline ? Int((hw?.estSystemW ?? 100).rounded()) : (status?.pcOnline == true ? 80 : 0)
             let kwh = status?.config?.kwhPriceEur ?? 0.32
             let ctH = String(format: "%.1f ct/h", (Double(watt) / 1000.0) * kwh * 100.0)
 
             HStack(spacing: 8) {
-                metricBox(title: "STROM", value: "\(watt) W", sub: ctH, color: .orange)
-                metricBox(title: "CPU", value: isOnline ? "\(Int((hw?.cpuPct ?? 0).rounded()))%" : "–", sub: isOnline ? "\(Int((hw?.cpuPowerW ?? 0).rounded())) W" : "aus", color: .cyan)
-                metricBox(title: "GPU", value: isOnline ? "\(Int((hw?.gpuTempC ?? 0).rounded()))°C" : "–", sub: isOnline ? "\(Int((hw?.gpuPowerW ?? 0).rounded())) W" : "aus", color: .purple)
-                metricBox(title: "RAM", value: isOnline ? "\(Int((hw?.ramPct ?? 0).rounded()))%" : "–", sub: isOnline ? String(format: "%.0f GB", hw?.ramUsedGb ?? 0) : "aus", color: .green)
+                miniStatTile(icon: "bolt.fill", title: "STROM", value: "~\(watt) W", sub: ctH, color: HubTheme.amber)
+                miniStatTile(icon: "cpu", title: "CPU", value: isOnline ? "\(Int((hw?.cpuPct ?? 0).rounded()))%" : "–", sub: isOnline ? "\(Int((hw?.cpuPowerW ?? 0).rounded())) W" : "0 W", color: HubTheme.sky)
+                miniStatTile(icon: "thermometer.medium", title: "GPU", value: isOnline ? "\(Int((hw?.gpuTempC ?? 0).rounded()))°C" : "–", sub: isOnline ? "\(Int((hw?.gpuPowerW ?? 0).rounded())) W" : "0 W", color: HubTheme.purple)
+                miniStatTile(icon: "memorychip", title: "RAM", value: isOnline ? "\(Int((hw?.ramPct ?? 0).rounded()))%" : "–", sub: isOnline ? String(format: "%.0f/%.0fG", hw?.ramUsedGb ?? 0, hw?.ramTotalGb ?? 32) : "aus", color: HubTheme.emerald)
             }
 
-            // Native Apple Charts Power Sparkline
+            // Live Power Sparkline
             if let history = status?.powerHistory, history.count >= 2 {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 5) {
                     HStack {
-                        Text("Leistungsverlauf")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                        Label("Live Stromverlauf", systemImage: "waveform.path.ecg")
+                            .font(.system(size: 10.5, weight: .bold))
+                            .foregroundStyle(HubTheme.amber)
                         Spacer()
                         let minW = Int((history.map(\.w).min() ?? 0).rounded())
                         let maxW = Int((history.map(\.w).max() ?? 0).rounded())
-                        Text("Min \(minW) W · Max \(maxW) W")
-                            .font(.caption2)
+                        Text("Min \(minW)W • Max \(maxW)W")
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
                     Chart(history) { sample in
-                        AreaMark(
-                            x: .value("Zeit", sample.t),
-                            y: .value("Watt", sample.w)
-                        )
-                        .foregroundStyle(LinearGradient(colors: [.orange.opacity(0.4), .clear], startPoint: .top, endPoint: .bottom))
-                        .interpolationMethod(.catmullRom)
-
-                        LineMark(
-                            x: .value("Zeit", sample.t),
-                            y: .value("Watt", sample.w)
-                        )
-                        .foregroundStyle(.orange)
-                        .lineStyle(StrokeStyle(lineWidth: 2))
-                        .interpolationMethod(.catmullRom)
+                        AreaMark(x: .value("T", sample.t), y: .value("W", sample.w))
+                            .foregroundStyle(LinearGradient(colors: [HubTheme.amber.opacity(0.38), .clear], startPoint: .top, endPoint: .bottom))
+                            .interpolationMethod(.catmullRom)
+                        LineMark(x: .value("T", sample.t), y: .value("W", sample.w))
+                            .foregroundStyle(HubTheme.amber)
+                            .lineStyle(StrokeStyle(lineWidth: 2))
+                            .interpolationMethod(.catmullRom)
                     }
                     .chartXAxis(.hidden)
                     .chartYAxis(.hidden)
-                    .frame(height: 44)
+                    .frame(height: 36)
                 }
                 .padding(10)
-                .background(Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 12))
+                .background(HubTheme.bg.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
             }
         }
-        .padding(18)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
-        .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color.white.opacity(0.1), lineWidth: 1))
+        .padding(16)
+        .hubCard(cornerRadius: 22, highlight: stateAccent)
     }
 
-    // MARK: - Controls
+    // MARK: - Action Deck (Rich Symbolic Buttons like Web UI!)
 
-    private var wakeButton: some View {
-        Button {
-            Task { await client.sendJellyAction("/api/wake", fallbackMsg: "Wake-on-LAN gesendet!") }
-        } label: {
-            Label("PC Aufwecken (Wake-on-LAN)", systemImage: "bolt.fill")
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .background(LinearGradient(colors: [.green, .teal], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 16))
-                .foregroundStyle(.white)
-        }
-    }
-
-    private var onlineControls: some View {
-        VStack(spacing: 12) {
-            // Primary Jellyfin launch button
-            Button {
-                Haptics.light()
-                let port = status?.config?.jellyfinPort ?? 8096
-                if let url = URL(string: "http://\(client.resolvedPcHost):\(port)") {
-                    openURL(url)
+    private var actionDeck: some View {
+        VStack(spacing: 10) {
+            // Wake-on-LAN or Jellyfin Primary Hero Button
+            if !isOnline {
+                Button {
+                    Task { await client.sendJellyAction("/api/wake", fallbackMsg: "⚡ Wake-on-LAN gesendet!") }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "bolt.fill")
+                            .font(.title3.bold())
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("PC Starten (Wake-on-LAN)")
+                                .font(.system(size: 15.5, weight: .heavy))
+                            Text("Weckt PC auf & startet HomeServer-Dienste")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.white.opacity(0.82))
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right.circle.fill")
+                            .font(.title3)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .background(LinearGradient(colors: [HubTheme.emerald, Color(red: 0.02, green: 0.58, blue: 0.41)], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 16))
+                    .foregroundStyle(.white)
+                    .shadow(color: HubTheme.emerald.opacity(0.35), radius: 12, y: 5)
                 }
-            } label: {
-                HStack {
-                    Image(systemName: "play.tv.fill")
-                    Text(jellyfinButtonTitle)
+                .buttonStyle(.plain)
+            } else {
+                Button {
+                    Haptics.light()
+                    let port = status?.config?.jellyfinPort ?? 8096
+                    if let url = URL(string: "http://\(client.resolvedPcHost):\(port)") {
+                        openURL(url)
+                    }
+                } label: {
+                    HStack(spacing: 12) {
+                        IconBadge(symbol: "play.tv.fill", colors: [HubTheme.sky, HubTheme.indigo], size: 40, iconSize: 18)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Jellyfin Stream öffnen")
+                                .font(.system(size: 15.5, weight: .heavy))
+                            Text("\(client.resolvedPcHost):\(status?.config?.jellyfinPort ?? 8096)\(status?.jellyfinInfo?.version.map { " • v\($0)" } ?? "")")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.white.opacity(0.8))
+                        }
+                        Spacer()
+                        Image(systemName: "arrow.up.right.circle.fill")
+                            .font(.title3)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(LinearGradient(colors: [Color(red: 0.01, green: 0.52, blue: 0.78), HubTheme.indigo], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 16))
+                    .foregroundStyle(.white)
+                    .shadow(color: HubTheme.sky.opacity(0.3), radius: 12, y: 5)
                 }
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 15)
-                .background(LinearGradient(colors: [.purple, .blue], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 16))
-                .foregroundStyle(.white)
+                .buttonStyle(.plain)
             }
 
-            // Native Segmented Switch: HomeServer <-> Gaming
-            Picker("Modus", selection: $selectedModeServer) {
-                Text("⚡ HomeServer").tag(true)
-                Text("🎮 Gaming").tag(false)
-            }
-            .pickerStyle(.segmented)
-            .onChange(of: selectedModeServer) { _, newVal in
-                guard newVal != (daemon?.serverMode ?? true) else { return }
-                let path = newVal ? "/api/services/start" : "/api/services/stop"
-                let msg = newVal ? "HomeServer-Modus gestartet!" : "Gaming-Modus aktiviert!"
-                Task { await client.sendJellyAction(path, fallbackMsg: msg) }
+            // 2 Mode Action Tiles: HomeServer vs Gaming
+            HStack(spacing: 10) {
+                Button {
+                    Task { await client.sendJellyAction("/api/services/start", fallbackMsg: "▶️ HomeServer-Dienste gestartet!") }
+                } label: {
+                    HStack(spacing: 10) {
+                        IconBadge(symbol: "play.fill", colors: [HubTheme.indigo, HubTheme.sky], size: 34, iconSize: 14)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Server-Dienste")
+                                .font(.system(size: 13, weight: .bold))
+                            Text(isOnline && isServerMode ? "Aktiv • Läuft" : "Alle starten")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(12)
+                    .hubCard(cornerRadius: 16, highlight: (isOnline && isServerMode) ? HubTheme.indigo : nil)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    Task { await client.sendJellyAction("/api/services/stop", fallbackMsg: "🎮 Gaming-Modus aktiviert!") }
+                } label: {
+                    HStack(spacing: 10) {
+                        IconBadge(symbol: "gamecontroller.fill", colors: [HubTheme.pink, HubTheme.purple], size: 34, iconSize: 14)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Gaming-Modus")
+                                .font(.system(size: 13, weight: .bold))
+                            Text(isOnline && !isServerMode ? "Aktiv • Max FPS" : "Dienste pausieren")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(12)
+                    .hubCard(cornerRadius: 16, highlight: (isOnline && !isServerMode) ? HubTheme.pink : nil)
+                }
+                .buttonStyle(.plain)
             }
 
-            // DarkRoom RGB & Hibernate
+            // RGB DarkRoom & Hibernate Row
             HStack(spacing: 10) {
                 let rgbOff = daemon?.rgbKilled == true
                 Button {
-                    Task { await client.sendJellyAction("/api/rgb/toggle", fallbackMsg: "RGB umgeschaltet!") }
+                    Task { await client.sendJellyAction("/api/rgb/toggle", fallbackMsg: "💡 RGB-Beleuchtung umgeschaltet!") }
                 } label: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Image(systemName: rgbOff ? "lightbulb.slash.fill" : "lightbulb.fill")
-                                .foregroundStyle(rgbOff ? .indigo : .yellow)
-                            Spacer()
-                            Text(rgbOff ? "DARK" : "AN")
-                                .font(.caption2.bold())
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background((rgbOff ? Color.indigo : Color.green).opacity(0.22), in: Capsule())
+                    HStack(spacing: 10) {
+                        IconBadge(
+                            symbol: rgbOff ? "moon.stars.fill" : "lightbulb.fill",
+                            colors: rgbOff ? [HubTheme.indigo, HubTheme.purple] : [HubTheme.amber, .orange],
+                            size: 34,
+                            iconSize: 15
+                        )
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(rgbOff ? "RGB Einschalten" : "DarkRoom RGB")
+                                .font(.system(size: 13, weight: .bold))
+                            Text(rgbOff ? "Aktuell AUS (Dark)" : "Razer & Roccat aus")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
                         }
-                        Text("DarkRoom RGB").font(.subheadline.bold())
-                        Text(rgbOff ? "Beleuchtung aus" : "Tastatur & Maus an").font(.caption).foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.09), lineWidth: 1))
+                    .padding(12)
+                    .hubCard(cornerRadius: 16)
                 }
                 .buttonStyle(.plain)
 
@@ -271,111 +355,135 @@ struct JellyControlView: View {
                     Haptics.warning()
                     showShutdownConfirm = true
                 } label: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Image(systemName: "moon.zzz.fill")
-                                .foregroundStyle(.pink)
-                            Spacer()
-                            Text("0W")
-                                .font(.caption2.bold())
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 3)
-                                .background(Color.pink.opacity(0.2), in: Capsule())
+                    HStack(spacing: 10) {
+                        IconBadge(symbol: "powersleep", colors: [HubTheme.rose, HubTheme.pink], size: 34, iconSize: 15)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Ruhezustand")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(Color(red: 1.0, green: 0.72, blue: 0.76))
+                            Text("0W Hibernate")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
                         }
-                        Text("Ruhezustand").font(.subheadline.bold())
-                        Text("Sicher schlafen").font(.caption).foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
-                    .background(Color.pink.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.pink.opacity(0.28), lineWidth: 1))
+                    .padding(12)
+                    .hubCard(cornerRadius: 16, highlight: HubTheme.rose.opacity(0.6))
                 }
                 .buttonStyle(.plain)
             }
         }
     }
 
-    // MARK: - Hardware Bars
+    // MARK: - Detailed Hardware Telemetry
 
-    private func hardwareSection(_ hw: HardwareTelemetry) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("LIVE HARDWARE")
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 4)
-
-            VStack(spacing: 12) {
-                progressRow(title: "CPU", detail: "\(Int((hw.cpuPct ?? 0).rounded()))% · \(Int((hw.cpuPowerW ?? 0).rounded())) W", value: (hw.cpuPct ?? 0) / 100.0, tint: .cyan)
-                progressRow(title: "GPU", detail: "\(Int((hw.gpuTempC ?? 0).rounded()))°C · \(Int((hw.gpuPowerW ?? 0).rounded())) W", value: min(1.0, (hw.gpuPowerW ?? 0) / 320.0), tint: .purple)
-                let ramPct = (hw.ramPct ?? 0) / 100.0
-                progressRow(title: "RAM", detail: String(format: "%.1f / %.0f GB", hw.ramUsedGb ?? 0, hw.ramTotalGb ?? 0), value: ramPct, tint: .green)
-            }
-            .padding(14)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
-        }
-    }
-
-    // MARK: - Services Grid
-
-    private var servicesSection: some View {
+    private func hardwareTelemetryCard(_ hw: HardwareTelemetry) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("DIENSTE & APPS")
-                    .font(.caption.bold())
+                Label("Hardware-Auslastung", systemImage: "gauge.with.dots.needle.67percent")
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text(client.resolvedPcHost)
-                    .font(.caption2.monospaced())
+                Text("\(daemon?.monitorsAttached ?? 1) Monitor(e) aktiv")
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+            }
+
+            hwBar(label: "CPU Auslastung", right: "\(Int((hw.cpuPct ?? 0).rounded()))% • \(Int((hw.cpuPowerW ?? 0).rounded())) W", progress: (hw.cpuPct ?? 0) / 100.0, colors: [HubTheme.sky, HubTheme.indigo])
+            hwBar(label: "GPU Leistung & Temp", right: "\(Int((hw.gpuTempC ?? 0).rounded()))°C • \(Int((hw.gpuPowerW ?? 0).rounded())) W", progress: min(1.0, (hw.gpuPowerW ?? 0) / 300.0), colors: [HubTheme.purple, HubTheme.pink])
+            hwBar(label: "Arbeitsspeicher (RAM)", right: String(format: "%.1f / %.0f GB (%d%%)", hw.ramUsedGb ?? 0, hw.ramTotalGb ?? 32, Int((hw.ramPct ?? 0).rounded())), progress: (hw.ramPct ?? 0) / 100.0, colors: [HubTheme.emerald, HubTheme.sky])
+        }
+        .padding(14)
+        .hubCard(cornerRadius: 18)
+    }
+
+    // MARK: - Services Grid (All 10 services with rich icons!)
+
+    private var servicesGridSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Dienste & Streaming-Apps", systemImage: "square.grid.2x2.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("Ziel: \(client.resolvedPcHost)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(HubTheme.sky)
             }
             .padding(.horizontal, 4)
 
             let cols = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
             LazyVGrid(columns: cols, spacing: 10) {
-                serviceTile("Jellyfin", sub: status?.jellyfinInfo?.version.map { "v\($0)" } ?? ":8096", icon: "play.tv", active: daemon?.jellyfin == true, port: status?.config?.jellyfinPort ?? 8096)
-                serviceTile("qBittorrent", sub: "Killswitch", icon: "arrow.down.circle", active: daemon?.qbittorrent == true, port: status?.config?.qbittorrentPort ?? 8080)
-                serviceTile("Sonarr", sub: "Serien", icon: "tv", active: daemon?.sonarr == true, port: status?.config?.sonarrPort ?? 8989)
-                serviceTile("Radarr", sub: "Filme", icon: "film", active: daemon?.radarr == true, port: status?.config?.radarrPort ?? 7878)
-                serviceTile("Prowlarr", sub: "Indexer", icon: "magnifyingglass", active: daemon?.prowlarr == true, port: status?.config?.prowlarrPort ?? 9696)
-                serviceTile("NordVPN", sub: daemon?.nordvpnIp ?? "Getrennt", icon: "shield.checkered", active: daemon?.nordvpn == true, port: nil)
-                serviceTile("Moonlight", sub: "Sunshine", icon: "gamecontroller", active: daemon?.sunshine == true, port: nil)
-                serviceTile("RustDesk", sub: "Remote PC", icon: "desktopcomputer", active: daemon?.rustdesk == true, port: nil)
-                serviceTile("Windows SSH", sub: "Port 22", icon: "terminal", active: daemon?.ssh == true, port: nil)
-                serviceTile("Tailscale", sub: "Mesh VPN", icon: "network", active: daemon?.tailscale == true, port: nil)
+                serviceCard(name: "Jellyfin Server", desc: status?.jellyfinInfo?.version.map { "v\($0) • Port 8096" } ?? "Port 8096", symbol: "play.tv.fill", colors: [HubTheme.purple, HubTheme.sky], active: daemon?.jellyfin == true, port: status?.config?.jellyfinPort ?? 8096)
+                serviceCard(name: "NordVPN Tunnel", desc: daemon?.nordvpnIp.map { "IP: \($0)" } ?? "Getrennt", symbol: "shield.checkered", colors: [HubTheme.emerald, HubTheme.sky], active: daemon?.nordvpn == true, port: nil)
+                serviceCard(name: "qBittorrent", desc: "Killswitch aktiv • :8080", symbol: "arrow.down.circle.fill", colors: [HubTheme.sky, HubTheme.indigo], active: daemon?.qbittorrent == true, port: status?.config?.qbittorrentPort ?? 8080)
+                serviceCard(name: "Moonlight", desc: "Sunshine • Port 47990", symbol: "gamecontroller.fill", colors: [HubTheme.amber, HubTheme.rose], active: daemon?.sunshine == true, port: nil)
+                serviceCard(name: "Sonarr (Serien)", desc: "Web-UI • Port 8989", symbol: "tv.fill", colors: [HubTheme.sky, HubTheme.emerald], active: daemon?.sonarr == true, port: status?.config?.sonarrPort ?? 8989)
+                serviceCard(name: "Radarr (Filme)", desc: "Web-UI • Port 7878", symbol: "film.fill", colors: [HubTheme.amber, .orange], active: daemon?.radarr == true, port: status?.config?.radarrPort ?? 7878)
+                serviceCard(name: "Prowlarr Indexer", desc: "Web-UI • Port 9696", symbol: "magnifyingglass.circle.fill", colors: [HubTheme.indigo, HubTheme.purple], active: daemon?.prowlarr == true, port: status?.config?.prowlarrPort ?? 9696)
+                serviceCard(name: "RustDesk", desc: "Remote Desktop", symbol: "display", colors: [HubTheme.emerald, .teal], active: daemon?.rustdesk == true, port: nil)
+                serviceCard(name: "Windows SSH", desc: "Port 22 (magnu)", symbol: "terminal.fill", colors: [.gray, HubTheme.indigo], active: daemon?.ssh == true, port: nil)
+                serviceCard(
+                    name: "Tastatur & Maus",
+                    desc: daemon?.rgbKilled == true ? "DarkRoom aktiv" : "Razer & Roccat an",
+                    symbol: "lightbulb.fill",
+                    colors: [HubTheme.amber, HubTheme.pink],
+                    active: daemon?.rgbKilled != true,
+                    port: nil,
+                    customTap: {
+                        Task { await client.sendJellyAction("/api/rgb/toggle", fallbackMsg: "💡 RGB umgeschaltet!") }
+                    }
+                )
             }
         }
     }
 
-    private func serviceTile(_ name: String, sub: String, icon: String, active: Bool, port: Int?) -> some View {
+    private func serviceCard(
+        name: String,
+        desc: String,
+        symbol: String,
+        colors: [Color],
+        active: Bool,
+        port: Int?,
+        customTap: (() -> Void)? = nil
+    ) -> some View {
         Button {
+            if let customTap {
+                customTap()
+                return
+            }
             guard let port else { return }
             Haptics.light()
             if let url = URL(string: "http://\(client.resolvedPcHost):\(port)") {
                 openURL(url)
             }
         } label: {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Image(systemName: icon)
-                        .font(.title3)
-                        .foregroundStyle(active ? .cyan : .secondary)
+                    IconBadge(symbol: symbol, colors: colors, size: 34, iconSize: 15)
                     Spacer()
-                    Text(active ? "LÄUFT" : "AUS")
-                        .font(.system(size: 9.5, weight: .heavy))
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background((active ? Color.green : Color.red).opacity(0.18), in: Capsule())
-                        .foregroundStyle(active ? .green : .red)
+                    StatusBadgePill(text: active ? "LÄUFT" : "AUS", active: active)
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(name).font(.subheadline.bold()).foregroundStyle(.primary)
-                    Text(sub).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    HStack(spacing: 4) {
+                        Text(name)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        if port != nil {
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(HubTheme.sky)
+                        }
+                    }
+                    Text(desc)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
             .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.08), lineWidth: 1))
+            .hubCard(cornerRadius: 16)
         }
         .buttonStyle(.plain)
     }
@@ -385,62 +493,55 @@ struct JellyControlView: View {
     private var heroSymbol: String {
         if isOnline { return isServerMode ? "bolt.fill" : "gamecontroller.fill" }
         if status?.pcOnline == true { return "lock.fill" }
-        return "moon.zzz.fill"
+        return "powersleep"
     }
 
     private var heroTitle: String {
         if let err = client.jellyError, status == nil { return err }
-        if isOnline { return isServerMode ? "HomeServer Aktiv" : "Gaming-Modus" }
+        if isOnline { return isServerMode ? "HomeServer Aktiv" : "Gaming-Modus Aktiv" }
         if status?.pcOnline == true { return "PC am Lockscreen" }
-        return "PC im Ruhezustand"
+        return "PC Ausgeschaltet (0W)"
     }
 
     private var heroSubtitle: String {
         if isOnline {
-            let ver = status?.jellyfinInfo?.version.map { " · Jellyfin v\($0)" } ?? ""
-            return (isServerMode ? "Alle Streaming-Dienste laufen" : "Server-Dienste pausiert") + ver
+            let host = daemon?.hostname ?? "PC"
+            return host + (isServerMode ? " • Alle Streaming-Dienste laufen" : " • Server-Dienste pausiert für Spiele")
         }
-        if status?.pcOnline == true { return "Fährt hoch · warte auf Windows-Daemon" }
-        return "0W Standby · bereit für Wake-on-LAN"
+        if status?.pcOnline == true { return "Netzwerk aktiv • warte auf Windows-Daemon" }
+        return "Bereit zum Aufwecken via Wake-on-LAN"
     }
 
-    private var jellyfinButtonTitle: String {
-        if let v = status?.jellyfinInfo?.version, !v.isEmpty {
-            return "Jellyfin öffnen (v\(v))"
-        }
-        return "Jellyfin öffnen"
-    }
-
-    private func statusPill(_ text: String, color: Color) -> some View {
-        HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 7, height: 7)
-            Text(text).font(.caption2.weight(.semibold))
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4)
-        .background(Color.white.opacity(0.07), in: Capsule())
-    }
-
-    private func metricBox(title: String, value: String, sub: String, color: Color) -> some View {
-        VStack(spacing: 2) {
-            Text(title).font(.system(size: 9.5, weight: .bold)).foregroundStyle(.secondary)
-            Text(value).font(.subheadline.bold()).foregroundStyle(color)
-            Text(sub).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+    private func miniStatTile(icon: String, title: String, value: String, sub: String, color: Color) -> some View {
+        VStack(spacing: 3) {
+            HStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 9, weight: .bold)).foregroundStyle(color)
+                Text(title).font(.system(size: 9, weight: .heavy)).foregroundStyle(.secondary)
+            }
+            Text(value).font(.system(size: 13.5, weight: .heavy)).foregroundStyle(color).lineLimit(1)
+            Text(sub).font(.system(size: 9.5)).foregroundStyle(.secondary).lineLimit(1)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
-        .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+        .background(HubTheme.cardElevated.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
     }
 
-    private func progressRow(title: String, detail: String, value: Double, tint: Color) -> some View {
+    private func hwBar(label: String, right: String, progress: Double, colors: [Color]) -> some View {
         VStack(spacing: 5) {
             HStack {
-                Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(label).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
                 Spacer()
-                Text(detail).font(.caption.bold())
+                Text(right).font(.system(size: 11.5, weight: .bold))
             }
-            ProgressView(value: max(0, min(1, value)))
-                .tint(tint)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.08))
+                    Capsule()
+                        .fill(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
+                        .frame(width: max(6, geo.size.width * CGFloat(max(0, min(1, progress)))))
+                }
+            }
+            .frame(height: 7)
         }
     }
 

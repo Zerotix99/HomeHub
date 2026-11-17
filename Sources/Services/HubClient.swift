@@ -17,6 +17,13 @@ enum ConnectionMode: String, CaseIterable, Identifiable {
     }
 }
 
+struct JITAppEntry: Codable, Identifiable {
+    let name: String
+    let bundle: String
+    let pid: Int
+    var id: String { bundle }
+}
+
 enum Haptics {
     static func light() { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
     static func medium() { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
@@ -28,7 +35,6 @@ enum Haptics {
 
 @MainActor
 final class HubClient: ObservableObject {
-    // Persisted connection settings
     @AppStorage("pi_tailscale_ip") var piTailscaleIP: String = "100.100.2.103"
     @AppStorage("pi_lan_ip") var piLanIP: String = "192.168.0.87"
     @AppStorage("pc_tailscale_ip") var pcTailscaleIP: String = "100.77.172.23"
@@ -44,32 +50,38 @@ final class HubClient: ObservableObject {
         }
     }
 
-    // Active resolved Pi host
     @Published var activePiHost: String = "100.100.2.103"
     @Published var activeRouteLabel: String = "Tailscale"
     @Published var isConnected: Bool = false
 
-    // Live JellyControl state
+    // JellyControl state
     @Published var jellyStatus: JellyStatusResponse?
     @Published var jellyError: String?
 
-    // Live Deal Radar state
+    // Deal Radar state
     @Published var dealState: DealStateResponse?
     @Published var deals: [DealItem] = []
     @Published var dealConfig: DealConfig?
     @Published var dealLogs: [ScanLogEntry] = []
     @Published var dealError: String?
 
-    // Anisette Server health
+    // SideStore & SideJITServer state
     @Published var anisetteOnline: Bool = false
+    @Published var sideJITOnline: Bool = false
+    @Published var sideJITVersion: String = ""
+    @Published var sideJITApps: [JITAppEntry] = []
+    @Published var isRefreshingJIT: Bool = false
 
-    // Toast notification
+    // Toast
     @Published var toastMessage: String?
+
+    let deviceUDID: String = "00008150-0011515234DA401C"
+    let githubLatestIPAURL: String = "https://github.com/Zerotix99/HomeHub/releases/latest/download/HomeHub.ipa"
 
     private let session: URLSession = {
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 6
-        cfg.timeoutIntervalForResource = 12
+        cfg.timeoutIntervalForResource = 15
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
         return URLSession(configuration: cfg)
     }()
@@ -77,6 +89,7 @@ final class HubClient: ObservableObject {
     var jellyBaseURL: String { "http://\(activePiHost):5050" }
     var dealBaseURL: String { "http://\(activePiHost):8888" }
     var anisetteURL: String { "http://\(activePiHost):6969" }
+    var sideJITURL: String { "http://\(activePiHost):9191" }
 
     var resolvedPcHost: String {
         switch connectionMode {
@@ -112,7 +125,6 @@ final class HubClient: ObservableObject {
             activeRouteLabel = "WLAN"
             return
         case .auto:
-            // Try Tailscale first (works both home & away), fall back to LAN
             if await probeHost(piTailscaleIP) {
                 activePiHost = piTailscaleIP
                 activeRouteLabel = "Tailscale"
@@ -138,8 +150,6 @@ final class HubClient: ObservableObject {
             return false
         }
     }
-
-    // MARK: - Generic JSON Helpers
 
     private func getJSON<T: Decodable>(_ urlString: String) async throws -> T {
         guard let url = URL(string: urlString) else { throw URLError(.badURL) }
@@ -255,7 +265,7 @@ final class HubClient: ObservableObject {
         do {
             let _ = try await session.data(for: req)
             Haptics.success()
-            showToast("Inserat entfernt")
+            showToast("🗑 Inserat entfernt")
             await refreshDealState()
         } catch {
             Haptics.error()
@@ -374,16 +384,67 @@ final class HubClient: ObservableObject {
         dealLogs = (try? await getJSON("\(dealBaseURL)/api/logs")) ?? []
     }
 
+    // MARK: - Anisette & SideJITServer API
+
     func checkAnisetteHealth() async {
         guard let url = URL(string: anisetteURL) else { anisetteOnline = false; return }
         var req = URLRequest(url: url)
-        req.timeoutInterval = 2.0
+        req.timeoutInterval = 2.5
         do {
             let (_, resp) = try await session.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             anisetteOnline = (200...299).contains(code)
         } catch {
             anisetteOnline = false
+        }
+    }
+
+    func checkSideJIT() async {
+        struct VerResp: Decodable { let pymobiledevice3: String?; let SideJITServer: String? }
+        do {
+            let ver: VerResp = try await getJSON("\(sideJITURL)/ver/")
+            sideJITOnline = true
+            sideJITVersion = "v\(ver.SideJITServer ?? "1.4") (pymd3 \(ver.pymobiledevice3 ?? ""))"
+            await loadSideJITApps(endpoint: "")
+        } catch {
+            sideJITOnline = false
+        }
+    }
+
+    func refreshSideJITDevices() async {
+        isRefreshingJIT = true
+        defer { isRefreshingJIT = false }
+        Haptics.medium()
+        await loadSideJITApps(endpoint: "/re/")
+        showToast(sideJITApps.isEmpty ? "🔄 JIT-Geräte gesucht (Display entsperren!)" : "✅ \(sideJITApps.count) JIT-Apps bereit!")
+    }
+
+    private func loadSideJITApps(endpoint: String) async {
+        guard let url = URL(string: "\(sideJITURL)\(endpoint)") else { return }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 12.0
+        do {
+            let (data, _) = try await session.data(for: req)
+            if let dict = try? JSONDecoder().decode([String: [JITAppEntry]].self, from: data) {
+                sideJITApps = dict.values.flatMap { $0 }
+            }
+        } catch {}
+    }
+
+    func enableJIT(for app: JITAppEntry) async {
+        Haptics.medium()
+        let encoded = app.bundle.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? app.bundle
+        guard let url = URL(string: "\(sideJITURL)/\(deviceUDID)/\(encoded)/") else { return }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 15.0
+        do {
+            let (data, _) = try await session.data(for: req)
+            let txt = String(data: data, encoding: .utf8) ?? "JIT aktiviert!"
+            Haptics.success()
+            showToast("⚡ \(txt.replacingOccurrences(of: "\"", with: ""))")
+        } catch {
+            Haptics.error()
+            showToast("JIT fehlgeschlagen – iPhone entsperrt?")
         }
     }
 }
