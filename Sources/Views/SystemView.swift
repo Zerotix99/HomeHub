@@ -124,7 +124,7 @@ struct SystemView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                StatusBadgePill(text: "v2.0", active: true, activeColor: HubTheme.sky)
+                StatusBadgePill(text: "v3.0", active: true, activeColor: HubTheme.sky)
             }
 
             // 1-Tap SideStore Install / Update

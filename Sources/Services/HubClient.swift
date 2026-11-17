@@ -58,6 +58,9 @@ final class HubClient: ObservableObject {
     @Published var jellyStatus: JellyStatusResponse?
     @Published var jellyError: String?
 
+    // Smart Home state (HomeKit / HA / WiZ / TECHO5)
+    @Published var smartHomeState: SmartHomeStateResponse?
+
     // Deal Radar state
     @Published var dealState: DealStateResponse?
     @Published var deals: [DealItem] = []
@@ -445,6 +448,101 @@ final class HubClient: ObservableObject {
         } catch {
             Haptics.error()
             showToast("JIT fehlgeschlagen – iPhone entsperrt?")
+        }
+    }
+
+    // MARK: - Smart Home API (HomeKit / HA / WiZ / TECHO5)
+
+    func refreshSmartHome() async {
+        do {
+            let st: SmartHomeStateResponse = try await getJSON("\(jellyBaseURL)/api/smarthome?t=\(Int(Date().timeIntervalSince1970))")
+            smartHomeState = st
+            isConnected = true
+        } catch {}
+    }
+
+    func controlSmartLight(
+        id: String,
+        state: Bool,
+        brightness: Int? = nil,
+        tempK: Int? = nil,
+        sceneId: Int? = nil,
+        rgb: (Int, Int, Int)? = nil
+    ) async {
+        struct LightReq: Encodable {
+            let id: String
+            let state: Bool
+            let brightness: Int?
+            let temp_k: Int?
+            let scene_id: Int?
+            let r: Int?
+            let g: Int?
+            let b: Int?
+        }
+        Haptics.light()
+        do {
+            let _: ActionResponse = try await sendJSON(
+                "\(jellyBaseURL)/api/smarthome/light",
+                body: LightReq(
+                    id: id,
+                    state: state,
+                    brightness: brightness,
+                    temp_k: tempK,
+                    scene_id: sceneId,
+                    r: rgb?.0,
+                    g: rgb?.1,
+                    b: rgb?.2
+                )
+            )
+            await refreshSmartHome()
+        } catch {
+            Haptics.error()
+            showToast("Lampen-Steuerung fehlgeschlagen")
+        }
+    }
+
+    func triggerSmartScene(_ sceneId: String) async {
+        struct SceneReq: Encodable { let scene: String }
+        Haptics.medium()
+        do {
+            let res: ActionResponse = try await sendJSON(
+                "\(jellyBaseURL)/api/smarthome/scene",
+                body: SceneReq(scene: sceneId)
+            )
+            Haptics.success()
+            showToast(res.message ?? "✨ Szene aktiviert!")
+            await refreshSmartHome()
+            await refreshJelly()
+        } catch {
+            Haptics.error()
+            showToast("Szene konnte nicht aktiviert werden")
+        }
+    }
+
+    func toggleSmartDevice(_ dev: SmartDeviceItem) async {
+        if dev.protectedDevice {
+            Haptics.warning()
+            showToast("🔒 PC-Steckdose ist vor versehentlichem Schalten geschützt!")
+            return
+        }
+        struct DevReq: Encodable {
+            let id: String
+            let ha_entity_id: String?
+            let category: String
+            let state: Bool
+        }
+        Haptics.medium()
+        do {
+            let res: ActionResponse = try await sendJSON(
+                "\(jellyBaseURL)/api/smarthome/device",
+                body: DevReq(id: dev.id, ha_entity_id: dev.haEntityId, category: dev.category, state: !dev.isOn)
+            )
+            Haptics.success()
+            if let msg = res.message { showToast(msg) }
+            await refreshSmartHome()
+        } catch {
+            Haptics.error()
+            showToast("Gerät nicht schaltbar")
         }
     }
 }

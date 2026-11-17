@@ -28,30 +28,36 @@ struct RootTabView: View {
     var body: some View {
         ZStack(alignment: .top) {
             TabView(selection: $selectedTab) {
+                SmartHomeView()
+                    .tabItem {
+                        Label("Zuhause", systemImage: "house.fill")
+                    }
+                    .tag(0)
+
                 JellyControlView()
                     .tabItem {
                         Label("JellyControl", systemImage: "bolt.circle.fill")
                     }
-                    .tag(0)
+                    .tag(1)
 
-                DealRadarView(switchToDevicesTab: { selectedTab = 2 })
+                DealRadarView(switchToDevicesTab: { selectedTab = 3 })
                     .tabItem {
                         Label("Deal Radar", systemImage: "tag.fill")
                     }
                     .badge(client.dealState?.stats.activeDeals ?? 0)
-                    .tag(1)
+                    .tag(2)
 
                 DeviceManagerTabView()
                     .tabItem {
                         Label("Geräte", systemImage: "slider.horizontal.below.rectangle")
                     }
-                    .tag(2)
+                    .tag(3)
 
                 SystemView()
                     .tabItem {
                         Label("System & JIT", systemImage: "cpu.fill")
                     }
-                    .tag(3)
+                    .tag(4)
             }
             .tint(HubTheme.sky)
 
@@ -75,12 +81,13 @@ struct RootTabView: View {
         }
         .task {
             await client.resolveActiveHost()
+            async let sh: () = client.refreshSmartHome()
             async let j: () = client.refreshJelly()
             async let d: () = client.refreshDealState()
             async let c: () = client.fetchDealConfig()
             async let a: () = client.checkAnisetteHealth()
             async let s: () = client.checkSideJIT()
-            _ = await (j, d, c, a, s)
+            _ = await (sh, j, d, c, a, s)
         }
     }
 }
