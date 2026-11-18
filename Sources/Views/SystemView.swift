@@ -124,7 +124,7 @@ struct SystemView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                StatusBadgePill(text: "v3.3", active: true, activeColor: HubTheme.sky)
+                StatusBadgePill(text: "v3.4", active: true, activeColor: HubTheme.sky)
             }
 
             // Cellular Refresh Tip Banner

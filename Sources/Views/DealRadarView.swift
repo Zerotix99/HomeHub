@@ -59,16 +59,28 @@ struct DealRadarView: View {
     @State private var searchText: String = ""
 
     @State private var showAddDevice = false
+    @State private var showQuietHoursSheet = false
     @State private var selectedDeal: DealItem?
+
+    private var quietHoursEnabled: Bool {
+        client.dealConfig?.quietHours?.enabled ?? false
+    }
+
+    private var quietHoursSummary: String {
+        guard let qh = client.dealConfig?.quietHours, qh.enabled else {
+            return "Ruhezeit: Aus"
+        }
+        return "\(qh.start)–\(qh.end)"
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 12) {
-                    // KPI Dashboard Strip (just like Web Dashboard!)
+                    // KPI Dashboard Strip
                     kpiHeaderGrid
 
-                    // Quick Action Bar
+                    // Quick Action Bar (Add Device, Quick Scan, Deep Scan, Ruhezeit)
                     quickActionButtons
 
                     // Live Scan Progress Banner
@@ -116,7 +128,10 @@ struct DealRadarView: View {
                             ForEach(client.deals) { deal in
                                 DealCardRow(
                                     deal: deal,
-                                    onOpenDetail: { selectedDeal = deal },
+                                    onOpenDetail: {
+                                        Haptics.light()
+                                        selectedDeal = deal
+                                    },
                                     onStateChange: { newState in
                                         Task {
                                             await client.updateDealState(adId: deal.adId, userState: newState)
@@ -130,6 +145,7 @@ struct DealRadarView: View {
                                         }
                                     },
                                     onOpenLink: {
+                                        Haptics.light()
                                         if let url = URL(string: deal.url) { openURL(url) }
                                     }
                                 )
@@ -150,16 +166,28 @@ struct DealRadarView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(client.dealState?.runtime.isScanning == true ? HubTheme.sky : HubTheme.emerald)
-                            .frame(width: 8, height: 8)
-                        Text(client.dealState?.runtime.isScanning == true ? "Scannt…" : "24/7 Aktiv")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.secondary)
+                    Button {
+                        Haptics.light()
+                        showQuietHoursSheet = true
+                    } label: {
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(client.dealState?.runtime.isScanning == true ? HubTheme.sky : (quietHoursEnabled ? HubTheme.purple : HubTheme.emerald))
+                                .frame(width: 8, height: 8)
+                            Text(client.dealState?.runtime.isScanning == true ? "Scannt…" : (quietHoursEnabled ? "🌙 \(quietHoursSummary)" : "24/7 Aktiv"))
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(quietHoursEnabled ? HubTheme.purple : .secondary)
+                        }
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        Haptics.light()
+                        showQuietHoursSheet = true
+                    } label: {
+                        Image(systemName: quietHoursEnabled ? "moon.zzz.fill" : "moon.stars.fill")
+                            .foregroundStyle(quietHoursEnabled ? HubTheme.purple : HubTheme.sky)
+                    }
                     Button {
                         Task { await client.sendTestPush() }
                     } label: {
@@ -169,6 +197,7 @@ struct DealRadarView: View {
                 }
             }
             .refreshable {
+                await client.fetchDealConfig()
                 await client.refreshDealState()
                 await reloadDeals()
             }
@@ -181,6 +210,9 @@ struct DealRadarView: View {
                     }
                 })
             }
+            .sheet(isPresented: $showQuietHoursSheet) {
+                DealRadarSettingsSheet()
+            }
             .sheet(item: $selectedDeal) { deal in
                 DealDetailSheet(deal: deal, onUpdated: {
                     Task { await reloadDeals() }
@@ -188,6 +220,7 @@ struct DealRadarView: View {
             }
         }
         .task {
+            await client.fetchDealConfig()
             await client.refreshDealState()
             await reloadDeals()
             while !Task.isCancelled {
@@ -227,42 +260,72 @@ struct DealRadarView: View {
     }
 
     private var quickActionButtons: some View {
-        HStack(spacing: 8) {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Button {
+                    Haptics.light()
+                    showAddDevice = true
+                } label: {
+                    Label("Gerät", systemImage: "plus.circle.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(LinearGradient(colors: [HubTheme.emerald, .teal], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 12))
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    Task { await client.triggerDealScan(deep: false) }
+                } label: {
+                    Label("Schnellscan", systemImage: "arrow.clockwise")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(LinearGradient(colors: [HubTheme.sky, HubTheme.indigo], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 12))
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    Task { await client.triggerDealScan(deep: true) }
+                } label: {
+                    Label("Tiefenscan", systemImage: "sparkle.magnifyingglass")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(HubTheme.indigo.opacity(0.25), in: RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(HubTheme.indigo.opacity(0.6), lineWidth: 1))
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+            }
+
+            // Quiet Hours & Radar Settings Quick Bar
             Button {
                 Haptics.light()
-                showAddDevice = true
+                showQuietHoursSheet = true
             } label: {
-                Label("Gerät", systemImage: "plus.circle.fill")
-                    .font(.system(size: 12.5, weight: .bold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(LinearGradient(colors: [HubTheme.emerald, .teal], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 12))
-                    .foregroundStyle(.white)
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                Task { await client.triggerDealScan(deep: false) }
-            } label: {
-                Label("Schnellscan", systemImage: "arrow.clockwise")
-                    .font(.system(size: 12.5, weight: .bold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(LinearGradient(colors: [HubTheme.sky, HubTheme.indigo], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 12))
-                    .foregroundStyle(.white)
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                Task { await client.triggerDealScan(deep: true) }
-            } label: {
-                Label("Alle Seiten", systemImage: "sparkle.magnifyingglass")
-                    .font(.system(size: 12.5, weight: .bold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(HubTheme.indigo.opacity(0.25), in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(HubTheme.indigo.opacity(0.6), lineWidth: 1))
-                    .foregroundStyle(.white)
+                HStack(spacing: 8) {
+                    Image(systemName: quietHoursEnabled ? "moon.zzz.fill" : "moon.stars.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(quietHoursEnabled ? HubTheme.purple : HubTheme.sky)
+                    Text(quietHoursEnabled ? "Ruhezeit aktiv (\(quietHoursSummary)) • Push-Bypass ab Score \(client.dealConfig?.quietHours?.bypassMinScore ?? 88)" : "Ruhezeit & Radar-Einstellungen (aktuell 24/7 Push aktiv)")
+                        .font(.system(size: 11.5, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Spacer()
+                    Text("Einstellen")
+                        .font(.system(size: 10.5, weight: .heavy))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
+                        .background(HubTheme.purple.opacity(0.22), in: Capsule())
+                        .foregroundStyle(HubTheme.purple)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(HubTheme.card, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(quietHoursEnabled ? HubTheme.purple.opacity(0.55) : HubTheme.border, lineWidth: 1))
             }
             .buttonStyle(.plain)
         }
@@ -406,22 +469,30 @@ struct DealCardRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Image with Score & Drop Badges
+            // Image with Score & Drop Badges (Strictly confined hit-box via GeometryReader + contentShape!)
             ZStack(alignment: .topLeading) {
                 if let imgStr = deal.imageUrl, let url = URL(string: imgStr) {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                        default:
-                            HubTheme.bg.overlay(Image(systemName: "photo").font(.title2).foregroundStyle(.secondary))
+                    GeometryReader { geo in
+                        AsyncImage(url: url) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: geo.size.width, height: 175)
+                                    .clipped()
+                            default:
+                                HubTheme.bg
+                                    .frame(width: geo.size.width, height: 175)
+                                    .overlay(Image(systemName: "photo").font(.title2).foregroundStyle(.secondary))
+                            }
                         }
                     }
-                    .frame(height: 185)
+                    .frame(height: 175)
                     .clipped()
                 } else {
                     HubTheme.bg
-                        .frame(height: 125)
+                        .frame(height: 115)
                         .overlay(Image(systemName: "tag.fill").font(.title2).foregroundStyle(.secondary))
                 }
 
@@ -460,6 +531,10 @@ struct DealCardRow: View {
                 }
                 .padding(10)
             }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                onOpenDetail()
+            }
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline) {
@@ -482,11 +557,17 @@ struct DealCardRow: View {
                         .lineLimit(1)
                 }
 
-                Text(deal.title)
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .onTapGesture { onOpenDetail() }
+                Button {
+                    onOpenDetail()
+                } label: {
+                    Text(deal.title)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
 
                 HStack(spacing: 6) {
                     Image(systemName: "mappin.and.ellipse")
@@ -537,7 +618,7 @@ struct DealCardRow: View {
 
                 Divider().overlay(HubTheme.border).padding(.vertical, 2)
 
-                // Footer Action Bar
+                // Footer Action Bar (Generous Touch Targets)
                 HStack(spacing: 8) {
                     iconActionBtn(
                         symbol: deal.effectiveState == "favorite" ? "star.fill" : "star",
@@ -567,7 +648,11 @@ struct DealCardRow: View {
                         onOpenDetail()
                     }
 
-                    Spacer()
+                    iconActionBtn(symbol: "trash", active: false, activeColor: HubTheme.rose) {
+                        onDelete()
+                    }
+
+                    Spacer(minLength: 4)
 
                     Button {
                         onOpenLink()
@@ -578,9 +663,10 @@ struct DealCardRow: View {
                         }
                         .font(.system(size: 12.5, weight: .bold))
                         .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
+                        .padding(.vertical, 9)
                         .background(LinearGradient(colors: [HubTheme.sky, HubTheme.indigo], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 10))
                         .foregroundStyle(.white)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -602,15 +688,203 @@ struct DealCardRow: View {
     }
 
     private func iconActionBtn(symbol: String, active: Bool, activeColor: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button {
+            Haptics.light()
+            action()
+        } label: {
             Image(systemName: symbol)
                 .font(.system(size: 14, weight: .semibold))
-                .frame(width: 36, height: 34)
-                .background(active ? activeColor.opacity(0.22) : Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 9))
+                .frame(width: 38, height: 36)
+                .background(active ? activeColor.opacity(0.22) : Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
                 .overlay(RoundedRectangle(cornerRadius: 9).stroke(active ? activeColor.opacity(0.6) : HubTheme.border, lineWidth: 1))
                 .foregroundStyle(active ? activeColor : .secondary)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Ruhezeit (Quiet Hours) & Global Deal Radar Settings Sheet
+
+struct DealRadarSettingsSheet: View {
+    @EnvironmentObject var client: HubClient
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var quietEnabled: Bool = false
+    @State private var quietStart: String = "23:00"
+    @State private var quietEnd: String = "07:00"
+    @State private var bypassMinScore: Int = 88
+
+    @State private var checkIntervalSec: Int = 300
+    @State private var priceDropMinEur: Double = 5.0
+    @State private var priceDropMinPct: Double = 5.0
+    @State private var ntfyTopic: String = "magnus-kleinanzeigen-ffm"
+    @State private var isSaving: Bool = false
+    @State private var didLoad: Bool = false
+
+    private let timeOptions = [
+        "20:00", "21:00", "21:30", "22:00", "22:30", "23:00", "23:30", "00:00",
+        "05:00", "05:30", "06:00", "06:30", "07:00", "07:30", "08:00", "08:30", "09:00", "10:00"
+    ]
+
+    private let intervalOptions = [
+        (60, "1 Minute (Ultra-Schnell)"),
+        (120, "2 Minuten"),
+        (180, "3 Minuten"),
+        (300, "5 Minuten (Standard)"),
+        (600, "10 Minuten"),
+        (900, "15 Minuten")
+    ]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle("🌙 Ruhezeit (Nachtmodus) aktivieren", isOn: $quietEnabled)
+                        .tint(HubTheme.purple)
+
+                    Picker("Ruhezeit Start", selection: $quietStart) {
+                        ForEach(timeOptions, id: \.self) { t in Text("\(t) Uhr").tag(t) }
+                    }
+
+                    Picker("Ruhezeit Ende", selection: $quietEnd) {
+                        ForEach(timeOptions, id: \.self) { t in Text("\(t) Uhr").tag(t) }
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Mega-Deal Bypass-Score")
+                            Spacer()
+                            Text(bypassMinScore >= 100 ? "100 (Komplett lautlos)" : "Ab Score \(bypassMinScore)")
+                                .font(.caption.bold())
+                                .foregroundStyle(HubTheme.purple)
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { Double(bypassMinScore) },
+                                set: { bypassMinScore = Int($0.rounded()) }
+                            ),
+                            in: 60...100,
+                            step: 2
+                        )
+                        .tint(HubTheme.purple)
+                    }
+                } header: {
+                    Text("Ruhezeit (Quiet Hours)")
+                } footer: {
+                    Text("Während der Ruhezeit scannt der Pi im Hintergrund weiter, unterdrückt aber Push-Meldungen (außer ein Inserat erreicht mindestens den Bypass-Score). Bei 100 kommen nachts gar keine Pushes.")
+                }
+
+                Section("Scan-Intervall & Preisdrop-Alarme") {
+                    Picker("Scan-Takt", selection: $checkIntervalSec) {
+                        ForEach(intervalOptions, id: \.0) { sec, lbl in
+                            Text(lbl).tag(sec)
+                        }
+                    }
+
+                    Stepper(value: $priceDropMinEur, in: 1...100, step: 5) {
+                        HStack {
+                            Text("Min. Preisdrop (€)")
+                            Spacer()
+                            Text("\(Int(priceDropMinEur)) €")
+                                .font(.caption.bold())
+                                .foregroundStyle(HubTheme.emerald)
+                        }
+                    }
+
+                    Stepper(value: $priceDropMinPct, in: 1...50, step: 1) {
+                        HStack {
+                            Text("Min. Preisdrop (%)")
+                            Spacer()
+                            Text("\(Int(priceDropMinPct)) %")
+                                .font(.caption.bold())
+                                .foregroundStyle(HubTheme.emerald)
+                        }
+                    }
+                }
+
+                Section("Push-Kanal (ntfy.sh)") {
+                    HStack {
+                        Text("Topic")
+                        Spacer()
+                        TextField("ntfy Topic", text: $ntfyTopic)
+                            .multilineTextAlignment(.trailing)
+                            .font(.caption.monospaced())
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                    }
+                    Button {
+                        Task { await client.sendTestPush() }
+                    } label: {
+                        Label("Test-Push an iPhone senden", systemImage: "bell.badge.fill")
+                    }
+                }
+            }
+            .navigationTitle("Ruhezeit & Radar")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Abbrechen") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Speichern") {
+                        Task { await saveSettings() }
+                    }
+                    .bold()
+                    .disabled(isSaving)
+                }
+            }
+            .task {
+                guard !didLoad else { return }
+                if client.dealConfig == nil {
+                    await client.fetchDealConfig()
+                }
+                if let cfg = client.dealConfig {
+                    quietEnabled = cfg.quietHours?.enabled ?? false
+                    quietStart = cfg.quietHours?.start ?? "23:00"
+                    quietEnd = cfg.quietHours?.end ?? "07:00"
+                    bypassMinScore = cfg.quietHours?.bypassMinScore ?? 88
+                    checkIntervalSec = cfg.checkIntervalSeconds
+                    priceDropMinEur = cfg.priceDropMinEur ?? 5.0
+                    priceDropMinPct = cfg.priceDropMinPct ?? 5.0
+                    ntfyTopic = cfg.ntfyTopic
+                }
+                didLoad = true
+            }
+        }
+    }
+
+    private func saveSettings() async {
+        isSaving = true
+        defer { isSaving = false }
+
+        if client.dealConfig == nil {
+            await client.fetchDealConfig()
+        }
+        guard var cfg = client.dealConfig else {
+            client.showToast("Konnte Konfiguration nicht laden")
+            return
+        }
+
+        cfg.quietHours = QuietHoursConfig(
+            enabled: quietEnabled,
+            start: quietStart,
+            end: quietEnd,
+            bypassMinScore: bypassMinScore
+        )
+        cfg.checkIntervalSeconds = checkIntervalSec
+        cfg.priceDropMinEur = priceDropMinEur
+        cfg.priceDropMinPct = priceDropMinPct
+        let cleanTopic = ntfyTopic.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanTopic.isEmpty {
+            cfg.ntfyTopic = cleanTopic
+        }
+
+        if await client.saveDealConfig(cfg) {
+            await client.refreshDealState()
+            client.showToast(quietEnabled ? "🌙 Ruhezeit (\(quietStart)–\(quietEnd)) gespeichert!" : "✅ Radar-Einstellungen gespeichert!")
+            dismiss()
+        }
     }
 }
 

@@ -5,9 +5,14 @@ struct DeviceManagerTabView: View {
     @Environment(\.openURL) private var openURL
 
     @State private var showQuickAdd = false
+    @State private var showQuietHoursSheet = false
     @State private var editingIndex: Int?
     @State private var deleteTargetIndex: Int?
     @State private var deleteTargetName: String = ""
+
+    private var quietHoursEnabled: Bool {
+        client.dealConfig?.quietHours?.enabled ?? false
+    }
 
     var body: some View {
         NavigationStack {
@@ -27,6 +32,36 @@ struct DeviceManagerTabView: View {
                     }
                     .padding(14)
                     .hubCard(cornerRadius: 18)
+
+                    // Ruhezeit (Quiet Hours) & Global Radar Config Card
+                    Button {
+                        Haptics.light()
+                        showQuietHoursSheet = true
+                    } label: {
+                        HStack(spacing: 10) {
+                            IconBadge(
+                                symbol: quietHoursEnabled ? "moon.zzz.fill" : "moon.stars.fill",
+                                colors: quietHoursEnabled ? [HubTheme.purple, HubTheme.indigo] : [HubTheme.sky, HubTheme.indigo],
+                                size: 36,
+                                iconSize: 16
+                            )
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(quietHoursEnabled ? "Ruhezeit aktiv (\(client.dealConfig?.quietHours?.start ?? "23:00")–\(client.dealConfig?.quietHours?.end ?? "07:00") Uhr)" : "Ruhezeit & Scan-Intervall")
+                                    .font(.system(size: 13.5, weight: .heavy))
+                                    .foregroundStyle(.white)
+                                Text(quietHoursEnabled ? "Nachts lautlos • Mega-Deals ab Score \(client.dealConfig?.quietHours?.bypassMinScore ?? 88)" : "24/7 Push aktiv • Tippen für Nachtruhe & Takt")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "slider.horizontal.3")
+                                .font(.caption.bold())
+                                .foregroundStyle(HubTheme.purple)
+                        }
+                        .padding(12)
+                        .hubCard(cornerRadius: 16, highlight: quietHoursEnabled ? HubTheme.purple : nil)
+                    }
+                    .buttonStyle(.plain)
 
                     // Add New Device Button
                     Button {
@@ -141,6 +176,9 @@ struct DeviceManagerTabView: View {
                         await client.refreshDealState()
                     }
                 })
+            }
+            .sheet(isPresented: $showQuietHoursSheet) {
+                DealRadarSettingsSheet()
             }
             .sheet(
                 isPresented: Binding(
