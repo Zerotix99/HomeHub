@@ -66,7 +66,7 @@ final class HubClient: NSObject, ObservableObject, UNUserNotificationCenterDeleg
     private var didRequestNotifAuth: Bool = false
 
     // Central Native Notification System
-    private var lastNotifTimestamp: Int = Int(Date().timeIntervalSince1970) - 15
+    private var lastNotifTimestamp: Double = Date().timeIntervalSince1970 - 15
     private var notificationPollingTask: Task<Void, Never>?
     private var processedNotifIds: Set<String> = []
     private var seenDealIds: Set<String> = []
@@ -127,7 +127,7 @@ final class HubClient: NSObject, ObservableObject, UNUserNotificationCenterDeleg
 
     func pollPiNotifications() async {
         guard isConnected || connectionMode != .auto else { return }
-        guard let url = URL(string: "\(jellyBaseURL)/api/notifications?since=\(lastNotifTimestamp)") else { return }
+        guard let url = URL(string: "\(jellyBaseURL)/api/notifications?since=\(String(format: "%.3f", lastNotifTimestamp))") else { return }
         var req = URLRequest(url: url)
         req.timeoutInterval = 2.5
         do {

@@ -199,7 +199,7 @@ struct HubNotificationItem: Codable, Identifiable {
     let body: String
     let tag: String?
     let url: String?
-    let timestamp: Int
+    let timestamp: Double
 }
 
 struct HubNotificationsResponse: Codable {
