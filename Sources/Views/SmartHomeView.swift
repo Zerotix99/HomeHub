@@ -395,7 +395,6 @@ struct SmartHomeView: View {
     // MARK: - 5A. Flexible 0–100% Rollo Control Card (Aqara E1)
 
     private var rolloControlCard: some View {
-        let cov = state?.cover
         let pos = Int(rolloSlider.rounded())
         let isOpen = pos > 3
 

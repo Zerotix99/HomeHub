@@ -91,6 +91,12 @@ final class HubClient: NSObject, ObservableObject, UNUserNotificationCenterDeleg
     let deviceUDID: String = "00008150-0011515234DA401C"
     let githubLatestIPAURL: String = "https://github.com/Zerotix99/HomeHub/releases/latest/download/HomeHub.ipa"
 
+    func ensureNotificationAuth() {
+        guard !didRequestNotifAuth else { return }
+        didRequestNotifAuth = true
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+    }
+
     override init() {
         super.init()
         UNUserNotificationCenter.current().delegate = self
@@ -369,10 +375,12 @@ final class HubClient: NSObject, ObservableObject, UNUserNotificationCenterDeleg
         for d in newDeals {
             if !seenDealIds.contains(d.id) {
                 seenDealIds.insert(d.id)
-                if d.isTopDeal {
+                let score = d.dealScore ?? 0
+                if score >= 60 || !d.isIgnored {
+                    let loc = d.location ?? "In der Nähe"
                     postNativeNotification(
                         title: "🎯 Neuer Top-Deal: \(d.title)",
-                        body: "\(d.price) € • \(d.cleanLocation) (Score: \(d.score))",
+                        body: "\(d.price) • \(loc) (Score: \(score))",
                         tag: "deal"
                     )
                 }
