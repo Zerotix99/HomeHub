@@ -893,28 +893,34 @@ struct PlugEnergyDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
     let plug: SmartPlugEnergyItem
 
+    @State private var liveWattSamples: [Double] = []
+
+    private var livePlug: SmartPlugEnergyItem {
+        client.smartHomeState?.plugs.first(where: { $0.id == plug.id }) ?? plug
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
                     HStack(spacing: 12) {
-                        IconBadge(symbol: plug.icon, colors: [HubTheme.emerald, HubTheme.sky], size: 44, iconSize: 20)
+                        IconBadge(symbol: livePlug.icon, colors: [HubTheme.emerald, HubTheme.sky], size: 44, iconSize: 20)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(plug.name)
+                            Text(livePlug.name)
                                 .font(.headline)
-                            Text("\(plug.room) • \(plug.ip) • \(String(format: "%.1f V", plug.voltageV))")
+                            Text("\(livePlug.room) • \(livePlug.ip) • \(String(format: "%.1f V", livePlug.voltageV))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button {
-                            Task { await client.toggleSmartPlug(plug) }
+                            Task { await client.toggleSmartPlug(livePlug) }
                         } label: {
-                            Text(plug.isOn ? "Ausschalten" : "Einschalten")
+                            Text(livePlug.isOn ? "Ausschalten" : "Einschalten")
                                 .font(.caption.bold())
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 7)
-                                .background(plug.isOn ? HubTheme.emerald : HubTheme.cardElevated, in: Capsule())
+                                .background(livePlug.isOn ? HubTheme.emerald : HubTheme.cardElevated, in: Capsule())
                                 .foregroundStyle(.white)
                         }
                         .buttonStyle(.plain)
@@ -923,23 +929,64 @@ struct PlugEnergyDetailSheet: View {
                     .hubCard(cornerRadius: 18)
 
                     HStack(spacing: 10) {
-                        kpiBox(title: "AKTUELL", val: String(format: "%.1f W", plug.powerW), color: HubTheme.amber)
-                        kpiBox(title: "HEUTE", val: "\(plug.todayWh) Wh", color: HubTheme.sky)
-                        kpiBox(title: "30 TAGE", val: String(format: "%.2f kWh", plug.monthKwh), color: HubTheme.emerald)
+                        kpiBox(title: "AKTUELL", val: String(format: "%.1f W", livePlug.powerW), color: HubTheme.amber)
+                        kpiBox(title: "HEUTE", val: "\(livePlug.todayWh) Wh", color: HubTheme.sky)
+                        kpiBox(title: "30 TAGE", val: String(format: "%.2f kWh", livePlug.monthKwh), color: HubTheme.emerald)
+                    }
+
+                    // Live Watt Sparkline while sheet is open
+                    if liveWattSamples.count >= 2 {
+                        let indexed = Array(liveWattSamples.enumerated())
+                        let minW = max(0.0, (liveWattSamples.min() ?? 0.0) - 2.0)
+                        let maxW = max(minW + 5.0, (liveWattSamples.max() ?? 10.0) + 2.0)
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("LIVE STROMVERLAUF (WATT)")
+                                    .font(.system(size: 10, weight: .heavy))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text(String(format: "Live: %.1f W", livePlug.powerW))
+                                    .font(.system(size: 10.5, weight: .bold))
+                                    .foregroundStyle(HubTheme.amber)
+                            }
+                            Chart {
+                                ForEach(indexed, id: \.offset) { idx, wVal in
+                                    AreaMark(
+                                        x: .value("T", idx),
+                                        yStart: .value("Base", minW),
+                                        yEnd: .value("W", wVal)
+                                    )
+                                    .foregroundStyle(LinearGradient(colors: [HubTheme.amber.opacity(0.38), .clear], startPoint: .top, endPoint: .bottom))
+                                    .interpolationMethod(.catmullRom)
+
+                                    LineMark(x: .value("T", idx), y: .value("W", wVal))
+                                        .foregroundStyle(HubTheme.amber)
+                                        .lineStyle(StrokeStyle(lineWidth: 2.2))
+                                        .interpolationMethod(.catmullRom)
+                                }
+                            }
+                            .chartXScale(domain: 0...max(1, indexed.count - 1))
+                            .chartYScale(domain: minW...maxW)
+                            .chartXAxis(.hidden)
+                            .frame(height: 110)
+                        }
+                        .padding(14)
+                        .hubCard(cornerRadius: 18)
                     }
 
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("TÄGLICHER STROMVERBRAUCH (WH)")
+                        Text("TÄGLICHER STROMVERBRAUCH (14 TAGE IN WH)")
                             .font(.system(size: 10, weight: .heavy))
                             .foregroundStyle(.secondary)
 
-                        if plug.history.isEmpty {
+                        if livePlug.history.isEmpty {
                             Text("Noch keine Verbrauchsdaten aufgezeichnet.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .padding(.vertical, 20)
                         } else {
-                            Chart(plug.history) { item in
+                            Chart(livePlug.history) { item in
                                 BarMark(
                                     x: .value("Tag", String(item.date.suffix(5))),
                                     y: .value("Wh", item.wh)
@@ -961,6 +1008,17 @@ struct PlugEnergyDetailSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Fertig") { dismiss() }
+                }
+            }
+            .task {
+                liveWattSamples = [livePlug.powerW, livePlug.powerW]
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    await client.refreshSmartHome()
+                    liveWattSamples.append(livePlug.powerW)
+                    if liveWattSamples.count > 30 {
+                        liveWattSamples.removeFirst()
+                    }
                 }
             }
         }

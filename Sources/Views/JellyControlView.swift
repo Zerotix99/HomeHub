@@ -188,32 +188,64 @@ struct JellyControlView: View {
                 miniStatTile(icon: "memorychip", title: "RAM", value: isOnline ? "\(Int((hw?.ramPct ?? 0).rounded()))%" : "–", sub: isOnline ? String(format: "%.0f/%.0fG", hw?.ramUsedGb ?? 0, hw?.ramTotalGb ?? 32) : "aus", color: HubTheme.emerald)
             }
 
-            // Live Power Sparkline
+            // Live Power Sparkline (Indexed X-axis & dynamic Y-domain so curve moves smoothly across full width!)
             if let history = status?.powerHistory, history.count >= 2 {
-                VStack(alignment: .leading, spacing: 5) {
+                let indexed = Array(history.enumerated())
+                let rawMin = history.map(\.w).min() ?? 0
+                let rawMax = history.map(\.w).max() ?? 150
+                let yMin = max(0.0, rawMin - 12.0)
+                let yMax = max(yMin + 24.0, rawMax + 12.0)
+                let latestW = Int((history.last?.w ?? Double(watt)).rounded())
+
+                VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        Label("Live Stromverlauf", systemImage: "waveform.path.ecg")
+                        Label("Live Stromverlauf (aktuell \(latestW) W)", systemImage: "waveform.path.ecg")
                             .font(.system(size: 10.5, weight: .bold))
                             .foregroundStyle(HubTheme.amber)
                         Spacer()
-                        let minW = Int((history.map(\.w).min() ?? 0).rounded())
-                        let maxW = Int((history.map(\.w).max() ?? 0).rounded())
-                        Text("Min \(minW)W • Max \(maxW)W")
-                            .font(.system(size: 10))
+                        Text("Min \(Int(rawMin.rounded()))W • Max \(Int(rawMax.rounded()))W")
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.secondary)
                     }
-                    Chart(history) { sample in
-                        AreaMark(x: .value("T", sample.t), y: .value("W", sample.w))
-                            .foregroundStyle(LinearGradient(colors: [HubTheme.amber.opacity(0.38), .clear], startPoint: .top, endPoint: .bottom))
+                    Chart {
+                        ForEach(indexed, id: \.offset) { idx, sample in
+                            AreaMark(
+                                x: .value("Sample", idx),
+                                yStart: .value("Base", yMin),
+                                yEnd: .value("Watt", sample.w)
+                            )
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [HubTheme.amber.opacity(0.42), HubTheme.amber.opacity(0.02)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
                             .interpolationMethod(.catmullRom)
-                        LineMark(x: .value("T", sample.t), y: .value("W", sample.w))
+
+                            LineMark(
+                                x: .value("Sample", idx),
+                                y: .value("Watt", sample.w)
+                            )
                             .foregroundStyle(HubTheme.amber)
-                            .lineStyle(StrokeStyle(lineWidth: 2))
+                            .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
                             .interpolationMethod(.catmullRom)
+
+                            if idx == indexed.count - 1 {
+                                PointMark(
+                                    x: .value("Sample", idx),
+                                    y: .value("Watt", sample.w)
+                                )
+                                .foregroundStyle(.white)
+                                .symbolSize(36)
+                            }
+                        }
                     }
+                    .chartXScale(domain: 0...max(1, indexed.count - 1))
+                    .chartYScale(domain: yMin...yMax)
                     .chartXAxis(.hidden)
                     .chartYAxis(.hidden)
-                    .frame(height: 36)
+                    .frame(height: 44)
                 }
                 .padding(10)
                 .background(HubTheme.bg.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
@@ -340,7 +372,7 @@ struct JellyControlView: View {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(rgbOff ? "RGB Einschalten" : "DarkRoom RGB")
                                 .font(.system(size: 13, weight: .bold))
-                            Text(rgbOff ? "Aktuell AUS (Dark)" : "Razer & Roccat aus")
+                            Text(rgbOff ? "Aktuell AUS (Dark)" : "Tastatur, Maus & GPU aus")
                                 .font(.system(size: 10.5))
                                 .foregroundStyle(.secondary)
                         }
@@ -424,8 +456,8 @@ struct JellyControlView: View {
                 serviceCard(name: "RustDesk", desc: "Remote Desktop", symbol: "display", colors: [HubTheme.emerald, .teal], active: daemon?.rustdesk == true, port: nil)
                 serviceCard(name: "Windows SSH", desc: "Port 22 (magnu)", symbol: "terminal.fill", colors: [.gray, HubTheme.indigo], active: daemon?.ssh == true, port: nil)
                 serviceCard(
-                    name: "Tastatur & Maus",
-                    desc: daemon?.rgbKilled == true ? "DarkRoom aktiv" : "Razer & Roccat an",
+                    name: "Tastatur, Maus & GPU",
+                    desc: daemon?.rgbKilled == true ? "DarkRoom aktiv (AUS)" : "Tastatur, Maus & GPU (Rot)",
                     symbol: "lightbulb.fill",
                     colors: [HubTheme.amber, HubTheme.pink],
                     active: daemon?.rgbKilled != true,
