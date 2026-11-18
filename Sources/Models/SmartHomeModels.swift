@@ -5,27 +5,87 @@ struct SmartHomeStateResponse: Codable {
     let haOnline: Bool
     let haUrl: String?
     let echoShowOnline: Bool
-    let echoShowIp: String?
     let summary: SmartHomeSummary
+    let security: SmartSecurityStatus
+    let cover: SmartCoverControl
+    let climate: SmartClimateControl
     let lights: [SmartLightItem]
-    let devices: [SmartDeviceItem]
-    let scenes: [SmartSceneItem]
+    let plugs: [SmartPlugEnergyItem]
+    let mediaPlayers: [SmartMediaItem]
+    let automations: [SmartAutomationItem]
 
     enum CodingKeys: String, CodingKey {
-        case summary, lights, devices, scenes
+        case summary, security, cover, climate, lights, plugs, automations
         case haOnline = "ha_online"
         case haUrl = "ha_url"
         case echoShowOnline = "echo_show_online"
-        case echoShowIp = "echo_show_ip"
+        case mediaPlayers = "media_players"
     }
 }
 
 struct SmartHomeSummary: Codable {
     let lightsOn: Int
     let lightsTotal: Int
-    let devicesOnline: Int
-    let devicesTotal: Int
+    let plugsOn: Int
+    let plugsTotal: Int
     let powerWatts: Double
+    let monthKwh: Double
+}
+
+struct SmartSecurityStatus: Codable {
+    let doorOpen: Bool
+    let windowOpen: Bool
+    let currentTempC: Double
+    let pcOnline: Bool
+    let pcMode: String
+    let pcWatts: Int
+
+    enum CodingKeys: String, CodingKey {
+        case doorOpen = "door_open"
+        case windowOpen = "window_open"
+        case currentTempC = "current_temp_c"
+        case pcOnline = "pc_online"
+        case pcMode = "pc_mode"
+        case pcWatts = "pc_watts"
+    }
+}
+
+struct SmartCoverControl: Codable {
+    let entityId: String
+    let name: String
+    let room: String
+    let state: String
+    let position: Int
+    let online: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case name, room, state, position, online
+        case entityId = "entity_id"
+    }
+}
+
+struct SmartClimateControl: Codable {
+    let entityId: String
+    let name: String
+    let room: String
+    let hvacMode: String
+    let currentTemp: Double
+    let targetTemp: Double
+    let minTemp: Double
+    let maxTemp: Double
+    let online: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case name, room, online
+        case entityId = "entity_id"
+        case hvacMode = "hvac_mode"
+        case currentTemp = "current_temp"
+        case targetTemp = "target_temp"
+        case minTemp = "min_temp"
+        case maxTemp = "max_temp"
+    }
+
+    var isHeating: Bool { hvacMode == "heat" }
 }
 
 struct SmartLightItem: Codable, Identifiable {
@@ -37,8 +97,8 @@ struct SmartLightItem: Codable, Identifiable {
     let brand: String
     let online: Bool
     var isOn: Bool
-    var brightness: Int       // 1..100
-    var tempK: Int?           // 2200..6500
+    var brightness: Int
+    var tempK: Int?
     var sceneId: Int?
     var sceneName: String?
     var r: Int?
@@ -66,33 +126,69 @@ struct SmartLightItem: Codable, Identifiable {
     }
 }
 
-struct SmartDeviceItem: Codable, Identifiable {
+struct PlugDayConsumption: Codable, Identifiable {
+    let date: String
+    let wh: Int
+    var id: String { date }
+}
+
+struct SmartPlugEnergyItem: Codable, Identifiable {
     let id: String
     let name: String
     let room: String
-    let category: String      // "plug", "display", "speaker", "bridge", "media", "pc_plug"
-    let brand: String
-    let ip: String?
+    let ip: String
+    let icon: String
     let online: Bool
     let isOn: Bool
-    let controllable: Bool
-    let protectedDevice: Bool
-    let subtitle: String
-    let icon: String
-    let haEntityId: String?
+    let powerW: Double
+    let voltageV: Double
+    let todayWh: Int
+    let monthKwh: Double
+    let history: [PlugDayConsumption]
+    let haEntityId: String
 
     enum CodingKeys: String, CodingKey {
-        case id, name, room, category, brand, ip, online, controllable, subtitle, icon
+        case id, name, room, ip, icon, online, history
         case isOn = "is_on"
-        case protectedDevice = "protected"
+        case powerW = "power_w"
+        case voltageV = "voltage_v"
+        case todayWh = "today_wh"
+        case monthKwh = "month_kwh"
         case haEntityId = "ha_entity_id"
     }
 }
 
-struct SmartSceneItem: Codable, Identifiable {
+struct SmartMediaItem: Codable, Identifiable {
+    let id: String
+    let name: String
+    let room: String
+    let brand: String
+    let icon: String
+    let state: String
+    let subtitle: String
+    let volumePct: Int
+    let isPlaying: Bool
+    let isOn: Bool
+    let haEntityId: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, room, brand, icon, state, subtitle
+        case volumePct = "volume_pct"
+        case isPlaying = "is_playing"
+        case isOn = "is_on"
+        case haEntityId = "ha_entity_id"
+    }
+}
+
+struct SmartAutomationItem: Codable, Identifiable {
     let id: String
     let name: String
     let subtitle: String
     let icon: String
-    let colorHex: String
+    let isEnabled: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, subtitle, icon
+        case isEnabled = "is_enabled"
+    }
 }

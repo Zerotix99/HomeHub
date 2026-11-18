@@ -519,30 +519,109 @@ final class HubClient: ObservableObject {
         }
     }
 
-    func toggleSmartDevice(_ dev: SmartDeviceItem) async {
-        if dev.protectedDevice {
-            Haptics.warning()
-            showToast("🔒 PC-Steckdose ist vor versehentlichem Schalten geschützt!")
-            return
-        }
-        struct DevReq: Encodable {
+    func toggleSmartPlug(_ plug: SmartPlugEnergyItem) async {
+        struct PlugReq: Encodable {
             let id: String
-            let ha_entity_id: String?
-            let category: String
+            let ha_entity_id: String
             let state: Bool
         }
         Haptics.medium()
         do {
             let res: ActionResponse = try await sendJSON(
-                "\(jellyBaseURL)/api/smarthome/device",
-                body: DevReq(id: dev.id, ha_entity_id: dev.haEntityId, category: dev.category, state: !dev.isOn)
+                "\(jellyBaseURL)/api/smarthome/plug",
+                body: PlugReq(id: plug.id, ha_entity_id: plug.haEntityId, state: !plug.isOn)
             )
             Haptics.success()
             if let msg = res.message { showToast(msg) }
             await refreshSmartHome()
         } catch {
             Haptics.error()
-            showToast("Gerät nicht schaltbar")
+            showToast("Steckdose konnte nicht geschaltet werden")
+        }
+    }
+
+    func setCoverPosition(_ pos: Int) async {
+        struct CoverReq: Encodable { let action: String; let position: Int? }
+        Haptics.light()
+        do {
+            let res: ActionResponse = try await sendJSON(
+                "\(jellyBaseURL)/api/smarthome/cover",
+                body: CoverReq(action: "position", position: max(0, min(100, pos)))
+            )
+            Haptics.success()
+            if let msg = res.message { showToast(msg) }
+            await refreshSmartHome()
+        } catch {
+            Haptics.error()
+            showToast("Rollo-Steuerung fehlgeschlagen")
+        }
+    }
+
+    func triggerCoverAction(_ action: String) async {
+        struct CoverReq: Encodable { let action: String; let position: Int? }
+        Haptics.medium()
+        do {
+            let res: ActionResponse = try await sendJSON(
+                "\(jellyBaseURL)/api/smarthome/cover",
+                body: CoverReq(action: action, position: nil)
+            )
+            Haptics.success()
+            if let msg = res.message { showToast(msg) }
+            await refreshSmartHome()
+        } catch {
+            Haptics.error()
+            showToast("Rollo-Befehl fehlgeschlagen")
+        }
+    }
+
+    func setClimate(hvacMode: String? = nil, targetTemp: Double? = nil) async {
+        struct ClimateReq: Encodable { let hvac_mode: String?; let target_temp: Double? }
+        Haptics.light()
+        do {
+            let res: ActionResponse = try await sendJSON(
+                "\(jellyBaseURL)/api/smarthome/climate",
+                body: ClimateReq(hvac_mode: hvacMode, target_temp: targetTemp)
+            )
+            Haptics.success()
+            if let msg = res.message { showToast(msg) }
+            await refreshSmartHome()
+        } catch {
+            Haptics.error()
+            showToast("Heizungs-Steuerung fehlgeschlagen")
+        }
+    }
+
+    func controlMediaPlayer(id: String, haEntityId: String, action: String, volumePct: Int? = nil) async {
+        struct MediaReq: Encodable { let id: String; let ha_entity_id: String; let action: String; let volume_pct: Int? }
+        Haptics.light()
+        do {
+            let res: ActionResponse = try await sendJSON(
+                "\(jellyBaseURL)/api/smarthome/media",
+                body: MediaReq(id: id, ha_entity_id: haEntityId, action: action, volume_pct: volumePct)
+            )
+            Haptics.success()
+            if let msg = res.message { showToast(msg) }
+            await refreshSmartHome()
+        } catch {
+            Haptics.error()
+            showToast("Media-Steuerung fehlgeschlagen")
+        }
+    }
+
+    func toggleAutomation(id: String, enabled: Bool) async {
+        struct AutoReq: Encodable { let id: String; let enabled: Bool }
+        Haptics.light()
+        do {
+            let res: ActionResponse = try await sendJSON(
+                "\(jellyBaseURL)/api/smarthome/automation",
+                body: AutoReq(id: id, enabled: enabled)
+            )
+            Haptics.success()
+            if let msg = res.message { showToast(msg) }
+            await refreshSmartHome()
+        } catch {
+            Haptics.error()
+            showToast("Automation konnte nicht umgeschaltet werden")
         }
     }
 }

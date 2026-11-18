@@ -1,7 +1,8 @@
 import SwiftUI
+import Charts
 
 enum SmartRoomFilter: String, CaseIterable, Identifiable {
-    case all = "Alle Räume"
+    case all = "Alle"
     case living = "Wohnzimmer"
     case bath = "Badezimmer"
 
@@ -21,61 +22,71 @@ struct SmartHomeView: View {
 
     @State private var selectedRoom: SmartRoomFilter = .all
     @State private var selectedLight: SmartLightItem?
+    @State private var selectedPlugForChart: SmartPlugEnergyItem?
+    @State private var selectedMedia: SmartMediaItem?
+
     @State private var masterBrightness: Double = 100
+    @State private var rolloSlider: Double = 0
+    @State private var isDraggingRollo = false
+    @State private var tempSlider: Double = 21.5
+    @State private var isDraggingTemp = false
 
     private var state: SmartHomeStateResponse? { client.smartHomeState }
-    private var lights: [SmartLightItem] {
-        guard let all = state?.lights else { return [] }
-        if selectedRoom == .all { return all }
-        return all.filter { $0.room.lowercased() == selectedRoom.rawValue.lowercased() }
-    }
-    private var devices: [SmartDeviceItem] {
-        guard let all = state?.devices else { return [] }
-        if selectedRoom == .all { return all }
-        return all.filter { $0.room.lowercased() == selectedRoom.rawValue.lowercased() }
-    }
+
+    private let lightQuickModes: [(String, String, Int?, Int?, Color)] = [
+        ("Warmweiß", "sun.min.fill", nil, 2700, HubTheme.amber),
+        ("Tageslicht", "sun.max.fill", nil, 5000, HubTheme.sky),
+        ("Cozy", "flame.fill", 6, nil, .orange),
+        ("Kamin", "fireplace.fill", 5, nil, HubTheme.rose),
+        ("Sunset", "sun.haze.fill", 3, nil, HubTheme.pink),
+        ("Ozean", "water.waves", 1, nil, HubTheme.sky),
+        ("Party", "sparkles", 4, nil, HubTheme.purple),
+        ("Nachtlicht", "moon.stars.fill", 14, nil, HubTheme.indigo)
+    ]
 
     var body: some View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 14) {
-                    // 1. Apple Home Top Summary Pills
-                    topSummaryStrip
+                VStack(spacing: 16) {
+                    // 1. Non-clickable Security & Climate Status Strip (Door, Window, Temp, Power)
+                    securityAndClimateStatusStrip
 
-                    // 2. Room Filter Segmented Pills
-                    roomFilterStrip
+                    // 2. Room Filter Bar
+                    roomFilterBar
 
-                    // 3. Apple Home Scenes Section
-                    scenesSection
+                    // 3. Quick Scenes Carousel
+                    scenesStrip
 
-                    // 4. Lights Section (Wohnzimmer WiZ v2 RGB+CCT)
-                    if !lights.isEmpty {
-                        lightsSection
-                    }
-
-                    // 5. Badezimmer Section (Echo Show 5 TECHO5 & Waschmaschine)
-                    if selectedRoom == .all || selectedRoom == .bath {
-                        roomDevicesSection(roomName: "Badezimmer", roomIcon: "shower.fill", roomColor: HubTheme.sky)
-                    }
-
-                    // 6. Wohnzimmer Smart Home Devices Section (Refoss, Kasa, Aqara, HomePod, Chromecast, PC Plug)
+                    // 4. Wohnzimmer Beleuchtung (with built-in Light Mode Picker!)
                     if selectedRoom == .all || selectedRoom == .living {
-                        roomDevicesSection(roomName: "Wohnzimmer", roomIcon: "sofa.fill", roomColor: HubTheme.emerald)
+                        lightingCardSection
                     }
 
-                    // 7. Home Assistant & TECHO5 Quick Access Footer Card
-                    homeAssistantBridgeCard
+                    // 5. Wohnzimmer Rollo (0-100% Flexible Slider) & Heizung (0.5°C Precision)
+                    if selectedRoom == .all || selectedRoom == .living {
+                        rolloControlCard
+                        heatingControlCard
+                    }
+
+                    // 6. Refoss Smart Plugs with Live Watt & kWh Energy Monitoring
+                    refossPlugsSection
+
+                    // 7. Media, TV, Echo Show 5 & HomeServer PC
+                    mediaAndPcSection
+
+                    // 8. Smart Automations & Push Notifications (ntfy)
+                    automationsSection
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 6)
-                .padding(.bottom, 30)
+                .padding(.bottom, 32)
             }
             .background(
                 ZStack {
                     HubTheme.bg.ignoresSafeArea()
                     RadialGradient(
                         colors: [
-                            (state?.summary.lightsOn ?? 0) > 0 ? HubTheme.amber.opacity(0.18) : HubTheme.sky.opacity(0.14),
+                            (state?.summary.lightsOn ?? 0) > 0 ? HubTheme.amber.opacity(0.16) : HubTheme.sky.opacity(0.12),
                             .clear
                         ],
                         center: .topLeading,
@@ -93,7 +104,7 @@ struct SmartHomeView: View {
                         Circle()
                             .fill((state?.haOnline ?? false) ? HubTheme.emerald : HubTheme.amber)
                             .frame(width: 8, height: 8)
-                        Text((state?.haOnline ?? false) ? "HomeKit + HA" : "Local Control")
+                        Text(client.activeRouteLabel)
                             .font(.caption.weight(.bold))
                             .foregroundStyle(.secondary)
                     }
@@ -115,103 +126,109 @@ struct SmartHomeView: View {
             .sheet(item: $selectedLight) { light in
                 LightDetailSheet(light: light)
             }
+            .sheet(item: $selectedPlugForChart) { plug in
+                PlugEnergyDetailSheet(plug: plug)
+            }
+            .sheet(item: $selectedMedia) { media in
+                MediaPlayerDetailSheet(media: media)
+            }
         }
         .task {
             await client.refreshSmartHome()
-            if let firstB = client.smartHomeState?.lights.first?.brightness {
-                masterBrightness = Double(firstB)
-            }
+            syncSlidersFromState()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
                 await client.refreshSmartHome()
+                syncSlidersFromState()
             }
         }
     }
 
-    // MARK: - 1. Top Summary Strip (Apple Home Style)
+    private func syncSlidersFromState() {
+        if let firstB = state?.lights.first?.brightness {
+            masterBrightness = Double(firstB)
+        }
+        if !isDraggingRollo, let pos = state?.cover.position {
+            rolloSlider = Double(pos)
+        }
+        if !isDraggingTemp, let t = state?.climate.targetTemp {
+            tempSlider = t
+        }
+    }
 
-    private var topSummaryStrip: some View {
-        let lightsOn = state?.summary.lightsOn ?? 0
-        let lightsTotal = state?.summary.lightsTotal ?? 3
-        let devsOnline = state?.summary.devicesOnline ?? 0
-        let watts = Int((state?.summary.powerWatts ?? 0).rounded())
+    // MARK: - 1. Security & Climate Status Strip (Non-Clickable Status Indicators!)
+
+    private var securityAndClimateStatusStrip: some View {
+        let sec = state?.security
+        let doorOpen = sec?.doorOpen ?? false
+        let winOpen = sec?.windowOpen ?? false
+        let temp = sec?.currentTempC ?? 21.3
+        let totalW = Int((state?.summary.powerWatts ?? 0).rounded())
 
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                homeStatusPill(
-                    icon: "lightbulb.fill",
-                    title: lightsOn > 0 ? "\(lightsOn)/\(lightsTotal) Lichter An" : "Lichter Aus",
-                    subtitle: "Wohnzimmer WiZ",
-                    color: lightsOn > 0 ? HubTheme.amber : .gray,
-                    active: lightsOn > 0
-                ) {
-                    Task { await client.controlSmartLight(id: "all", state: lightsOn == 0) }
-                }
+                // Non-clickable Door Sensor Badge
+                statusIndicatorChip(
+                    icon: doorOpen ? "door.left.hand.open" : "door.left.hand.closed",
+                    title: "Wohnungstür",
+                    value: doorOpen ? "GEÖFFNET ⚠️" : "Geschlossen",
+                    color: doorOpen ? HubTheme.rose : HubTheme.emerald
+                )
 
-                homeStatusPill(
-                    icon: "display",
-                    title: "Echo Show 5",
-                    subtitle: (state?.echoShowOnline ?? true) ? "Badezimmer • TECHO5" : "Offline",
-                    color: HubTheme.sky,
-                    active: state?.echoShowOnline ?? true
-                ) {
-                    selectedRoom = .bath
-                }
+                // Non-clickable Window Sensor Badge
+                statusIndicatorChip(
+                    icon: winOpen ? "window.vertical.open" : "window.vertical.closed",
+                    title: "Fenster",
+                    value: winOpen ? "OFFEN ⚠️" : "Geschlossen",
+                    color: winOpen ? HubTheme.amber : HubTheme.emerald
+                )
 
-                homeStatusPill(
-                    icon: "powerplug.fill",
-                    title: "\(devsOnline) Geräte",
-                    subtitle: "Wohn- & Badezimmer",
-                    color: HubTheme.emerald,
-                    active: true
-                ) {
-                    selectedRoom = .all
-                }
+                // Room Temperature Badge
+                statusIndicatorChip(
+                    icon: "thermometer.medium",
+                    title: "Raumklima",
+                    value: String(format: "%.1f °C", temp),
+                    color: HubTheme.sky
+                )
 
-                homeStatusPill(
+                // Total Power Badge
+                statusIndicatorChip(
                     icon: "bolt.fill",
-                    title: "~\(watts) W",
-                    subtitle: "Gesamt-Last",
-                    color: HubTheme.purple,
-                    active: watts > 20
-                ) {}
+                    title: "Gesamt-Last",
+                    value: "~\(totalW) W",
+                    color: HubTheme.purple
+                )
             }
         }
     }
 
-    private func homeStatusPill(icon: String, title: String, subtitle: String, color: Color, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: {
-            Haptics.light()
-            action()
-        }) {
-            HStack(spacing: 9) {
-                ZStack {
-                    Circle()
-                        .fill(active ? color.opacity(0.24) : Color.white.opacity(0.06))
-                        .frame(width: 34, height: 34)
-                    Image(systemName: icon)
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(active ? color : .secondary)
-                }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(.system(size: 12.5, weight: .heavy))
-                        .foregroundStyle(.white)
-                    Text(subtitle)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
+    private func statusIndicatorChip(icon: String, title: String, value: String, color: Color) -> some View {
+        HStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(color.opacity(0.2))
+                    .frame(width: 32, height: 32)
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(color)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .hubCard(cornerRadius: 22, highlight: active ? color.opacity(0.6) : nil)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.system(size: 12, weight: .heavy))
+                    .foregroundStyle(.white)
+            }
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .hubCard(cornerRadius: 18)
     }
 
-    // MARK: - 2. Room Filter Strip
+    // MARK: - 2. Room Filter Bar
 
-    private var roomFilterStrip: some View {
+    private var roomFilterBar: some View {
         HStack(spacing: 8) {
             ForEach(SmartRoomFilter.allCases) { room in
                 let isSel = selectedRoom == room
@@ -228,7 +245,7 @@ struct SmartHomeView: View {
                             .font(.system(size: 12.5, weight: .bold))
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 9)
+                    .padding(.vertical, 8)
                     .background(isSel ? HubTheme.sky.opacity(0.22) : HubTheme.card, in: Capsule())
                     .overlay(Capsule().stroke(isSel ? HubTheme.sky.opacity(0.65) : HubTheme.border, lineWidth: 1))
                     .foregroundStyle(isSel ? .white : .secondary)
@@ -238,115 +255,128 @@ struct SmartHomeView: View {
         }
     }
 
-    // MARK: - 3. Scenes Section (Apple Home Style)
+    // MARK: - 3. Quick Scenes Carousel
 
-    private var scenesSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Szenen & Stimmungen", systemImage: "sparkles")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 4)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 9) {
-                    sceneTile(id: "cozy", title: "Cozy Abend", sub: "Warmes Licht 80%", icon: "flame.fill", colors: [HubTheme.amber, .orange])
-                    sceneTile(id: "bright", title: "Hell & Fokus", sub: "Tageslicht 100%", icon: "sun.max.fill", colors: [HubTheme.sky, HubTheme.emerald])
-                    sceneTile(id: "cinema", title: "Kino & Stream", sub: "Dimmen 15% + RGB Aus", icon: "film.stack.fill", colors: [HubTheme.purple, HubTheme.indigo])
-                    sceneTile(id: "gaming", title: "Gaming Vibe", sub: "Sunset + Max FPS", icon: "gamecontroller.fill", colors: [HubTheme.pink, HubTheme.purple])
-                    sceneTile(id: "night", title: "Nachtlicht", sub: "Sanftes 10% Warm", icon: "moon.stars.fill", colors: [HubTheme.indigo, .blue])
-                    sceneTile(id: "all_off", title: "Lichter Aus", sub: "Alle Lampen aus", icon: "power", colors: [HubTheme.rose, .red])
-                }
+    private var scenesStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                scenePill(id: "cozy", title: "Cozy Abend", icon: "flame.fill", colors: [HubTheme.amber, .orange])
+                scenePill(id: "bright", title: "Hell & Fokus", icon: "sun.max.fill", colors: [HubTheme.sky, HubTheme.emerald])
+                scenePill(id: "cinema", title: "Kino & Rollo Zu", icon: "film.stack.fill", colors: [HubTheme.purple, HubTheme.indigo])
+                scenePill(id: "gaming", title: "Gaming Vibe", icon: "gamecontroller.fill", colors: [HubTheme.pink, HubTheme.purple])
+                scenePill(id: "all_off", title: "Lichter Aus", icon: "power", colors: [HubTheme.rose, .red])
             }
         }
     }
 
-    private func sceneTile(id: String, title: String, sub: String, icon: String, colors: [Color]) -> some View {
+    private func scenePill(id: String, title: String, icon: String, colors: [Color]) -> some View {
         Button {
             Task { await client.triggerSmartScene(id) }
         } label: {
-            HStack(spacing: 10) {
-                IconBadge(symbol: icon, colors: colors, size: 36, iconSize: 16)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.system(size: 13, weight: .heavy))
-                        .foregroundStyle(.white)
-                    Text(sub)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                }
+            HStack(spacing: 8) {
+                IconBadge(symbol: icon, colors: colors, size: 30, iconSize: 13)
+                Text(title)
+                    .font(.system(size: 12.5, weight: .heavy))
+                    .foregroundStyle(.white)
             }
-            .padding(.horizontal, 13)
-            .padding(.vertical, 10)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             .hubCard(cornerRadius: 16)
         }
         .buttonStyle(.plain)
     }
 
-    // MARK: - 4. Interactive Apple HomeKit Light Cards
+    // MARK: - 4. Unified Lighting Section (with Built-in Mode Selector!)
 
-    private var lightsSection: some View {
+    private var lightingCardSection: some View {
+        let lights = state?.lights ?? []
         let anyOn = lights.contains(where: \.isOn)
-        return VStack(alignment: .leading, spacing: 10) {
+
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("Wohnzimmer Beleuchtung (WiZ v2)", systemImage: "lightbulb.2.fill")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.secondary)
+                IconBadge(symbol: "lightbulb.2.fill", colors: [HubTheme.amber, .orange], size: 34, iconSize: 15)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Wohnzimmer Licht & Modi")
+                        .font(.system(size: 14.5, weight: .heavy))
+                    Text(anyOn ? "\(lights.filter(\.isOn).count) von \(lights.count) Lampen aktiv" : "Alle Lampen ausgeschaltet")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button {
                     Task { await client.controlSmartLight(id: "all", state: !anyOn) }
                 } label: {
                     Text(anyOn ? "Alle Aus" : "Alle An")
-                        .font(.system(size: 11.5, weight: .bold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(anyOn ? HubTheme.amber.opacity(0.2) : Color.white.opacity(0.08), in: Capsule())
+                        .font(.system(size: 11.5, weight: .heavy))
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 5)
+                        .background(anyOn ? HubTheme.amber.opacity(0.22) : Color.white.opacity(0.08), in: Capsule())
                         .foregroundStyle(anyOn ? HubTheme.amber : .secondary)
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, 4)
 
-            // Master Brightness Bar for all Wohnzimmer lights
-            HStack(spacing: 10) {
-                Image(systemName: anyOn ? "sun.max.fill" : "sun.min")
-                    .foregroundStyle(anyOn ? HubTheme.amber : .secondary)
-                Text("Alle Lampen")
-                    .font(.system(size: 12.5, weight: .bold))
-                Slider(
-                    value: $masterBrightness,
-                    in: 10...100,
-                    step: 5,
-                    onEditingChanged: { editing in
-                        if !editing {
+            // Quick Light Mode Selector Pills (1-Tap Mode Change for all Wohnzimmer lights!)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(lightQuickModes, id: \.0) { name, icon, sceneId, tempK, col in
+                        let isCur = lights.first?.sceneName?.lowercased() == name.lowercased()
+                        Button {
                             Task {
-                                await client.controlSmartLight(id: "all", state: true, brightness: Int(masterBrightness))
+                                await client.controlSmartLight(
+                                    id: "all",
+                                    state: true,
+                                    brightness: Int(masterBrightness),
+                                    tempK: tempK,
+                                    sceneId: sceneId
+                                )
                             }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: icon)
+                                    .font(.system(size: 10.5, weight: .bold))
+                                    .foregroundStyle(col)
+                                Text(name)
+                                    .font(.system(size: 11.5, weight: .bold))
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(isCur ? col.opacity(0.22) : HubTheme.bg.opacity(0.6), in: Capsule())
+                            .overlay(Capsule().stroke(isCur ? col.opacity(0.65) : HubTheme.border, lineWidth: 1))
+                            .foregroundStyle(.white)
                         }
+                        .buttonStyle(.plain)
                     }
-                )
+                }
+            }
+
+            // Master Brightness Slider
+            HStack(spacing: 10) {
+                Image(systemName: "sun.max.fill")
+                    .font(.caption)
+                    .foregroundStyle(HubTheme.amber)
+                Slider(value: $masterBrightness, in: 10...100, step: 5) { editing in
+                    if !editing {
+                        Task { await client.controlSmartLight(id: "all", state: true, brightness: Int(masterBrightness)) }
+                    }
+                }
                 .tint(HubTheme.amber)
                 Text("\(Int(masterBrightness))%")
                     .font(.system(size: 11.5, weight: .heavy, design: .monospaced))
                     .foregroundStyle(HubTheme.amber)
                     .frame(width: 38, alignment: .trailing)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .hubCard(cornerRadius: 14)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(HubTheme.bg.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
 
-            let cols = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
-            LazyVGrid(columns: cols, spacing: 10) {
+            // 3 Individual Light Tiles
+            HStack(spacing: 8) {
                 ForEach(lights) { light in
-                    HomeKitLightTile(
+                    CompactLightTile(
                         light: light,
                         onToggle: {
                             Task { await client.controlSmartLight(id: light.id, state: !light.isOn) }
-                        },
-                        onBrightnessChange: { newBri in
-                            Task { await client.controlSmartLight(id: light.id, state: true, brightness: newBri) }
                         },
                         onOpenDetail: {
                             Haptics.light()
@@ -356,32 +386,232 @@ struct SmartHomeView: View {
                 }
             }
         }
+        .padding(14)
+        .hubCard(cornerRadius: 20, highlight: anyOn ? HubTheme.amber.opacity(0.45) : nil)
     }
 
-    // MARK: - 5 & 6. Room Devices Section (Badezimmer & Wohnzimmer)
+    // MARK: - 5A. Flexible 0–100% Rollo Control Card (Aqara E1)
 
-    private func roomDevicesSection(roomName: String, roomIcon: String, roomColor: Color) -> some View {
-        let roomDevs = (state?.devices ?? []).filter { $0.room.lowercased() == roomName.lowercased() }
+    private var rolloControlCard: some View {
+        let cov = state?.cover
+        let pos = Int(rolloSlider.rounded())
+        let isOpen = pos > 3
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                IconBadge(
+                    symbol: isOpen ? "blinds.horizontal.open" : "blinds.horizontal.closed",
+                    colors: [HubTheme.sky, HubTheme.indigo],
+                    size: 36,
+                    iconSize: 16
+                )
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Wohnzimmer Rollo (Aqara E1)")
+                        .font(.system(size: 14.5, weight: .heavy))
+                    Text(pos == 0 ? "Komplett geschlossen (0%)" : (pos == 100 ? "Komplett geöffnet (100%)" : "Position: \(pos)% geöffnet"))
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(HubTheme.sky)
+                }
+                Spacer()
+                Text("\(pos)%")
+                    .font(.system(size: 16, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(HubTheme.sky)
+            }
+
+            // Smooth 0%..100% Slider (every single percent!)
+            HStack(spacing: 10) {
+                Text("0%")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Slider(
+                    value: $rolloSlider,
+                    in: 0...100,
+                    step: 1,
+                    onEditingChanged: { editing in
+                        isDraggingRollo = editing
+                        if !editing {
+                            Task { await client.setCoverPosition(Int(rolloSlider.rounded())) }
+                        }
+                    }
+                )
+                .tint(HubTheme.sky)
+                Text("100%")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+
+            // Quick Position Preset Buttons
+            HStack(spacing: 6) {
+                ForEach([("Zu (0%)", 0), ("25%", 25), ("50%", 50), ("75%", 75), ("Auf (100%)", 100)], id: \.1) { lbl, targetPos in
+                    Button {
+                        rolloSlider = Double(targetPos)
+                        Task { await client.setCoverPosition(targetPos) }
+                    } label: {
+                        Text(lbl)
+                            .font(.system(size: 11, weight: .bold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 7)
+                            .background(abs(pos - targetPos) <= 2 ? HubTheme.sky.opacity(0.25) : HubTheme.bg.opacity(0.6), in: RoundedRectangle(cornerRadius: 9))
+                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(abs(pos - targetPos) <= 2 ? HubTheme.sky : HubTheme.border, lineWidth: 1))
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Button {
+                    Task { await client.triggerCoverAction("stop") }
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(HubTheme.rose.opacity(0.2), in: RoundedRectangle(cornerRadius: 9))
+                        .foregroundStyle(HubTheme.rose)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(14)
+        .hubCard(cornerRadius: 20)
+    }
+
+    // MARK: - 5B. Flexible Heating / Thermostat Control Card (Kasa KE100)
+
+    private var heatingControlCard: some View {
+        let cl = state?.climate
+        let isHeating = cl?.isHeating ?? false
+        let curT = cl?.currentTemp ?? 21.3
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                IconBadge(
+                    symbol: isHeating ? "flame.fill" : "snowflake",
+                    colors: isHeating ? [HubTheme.amber, HubTheme.rose] : [.gray, HubTheme.sky],
+                    size: 36,
+                    iconSize: 16
+                )
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Wohnzimmer Heizung (Thermostat)")
+                        .font(.system(size: 14.5, weight: .heavy))
+                    Text(String(format: "Ist-Temperatur: %.1f °C • %@", curT, isHeating ? "Heizt aktiv" : "Ausgeschaltet"))
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(isHeating ? HubTheme.amber : .secondary)
+                }
+                Spacer()
+                Button {
+                    Task { await client.setClimate(hvacMode: isHeating ? "off" : "heat") }
+                } label: {
+                    Text(isHeating ? "HEIZT" : "AUS")
+                        .font(.system(size: 11, weight: .heavy))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background((isHeating ? HubTheme.amber : Color.white).opacity(0.18), in: Capsule())
+                        .foregroundStyle(isHeating ? HubTheme.amber : .secondary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            // Target Temperature Stepper + Slider (5.0°C .. 30.0°C in 0.5°C steps)
+            HStack(spacing: 10) {
+                Button {
+                    let next = max(5.0, (tempSlider * 2.0).rounded() / 2.0 - 0.5)
+                    tempSlider = next
+                    Task { await client.setClimate(hvacMode: "heat", targetTemp: next) }
+                } label: {
+                    Image(systemName: "minus")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(width: 32, height: 32)
+                        .background(HubTheme.cardElevated, in: Circle())
+                }
+                .buttonStyle(.plain)
+
+                Slider(
+                    value: $tempSlider,
+                    in: 5.0...30.0,
+                    step: 0.5,
+                    onEditingChanged: { editing in
+                        isDraggingTemp = editing
+                        if !editing {
+                            Task { await client.setClimate(hvacMode: "heat", targetTemp: tempSlider) }
+                        }
+                    }
+                )
+                .tint(HubTheme.amber)
+
+                Button {
+                    let next = min(30.0, (tempSlider * 2.0).rounded() / 2.0 + 0.5)
+                    tempSlider = next
+                    Task { await client.setClimate(hvacMode: "heat", targetTemp: next) }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(width: 32, height: 32)
+                        .background(HubTheme.cardElevated, in: Circle())
+                }
+                .buttonStyle(.plain)
+
+                Text(String(format: "%.1f°C", tempSlider))
+                    .font(.system(size: 14, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(HubTheme.amber)
+                    .frame(width: 56, alignment: .trailing)
+            }
+
+            // Quick Temperature Presets
+            HStack(spacing: 8) {
+                ForEach([("Eco 18°C", 18.0), ("Komfort 21,5°C", 21.5), ("Warm 23,5°C", 23.5)], id: \.0) { lbl, val in
+                    Button {
+                        tempSlider = val
+                        Task { await client.setClimate(hvacMode: "heat", targetTemp: val) }
+                    } label: {
+                        Text(lbl)
+                            .font(.system(size: 11, weight: .bold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                            .background(abs(tempSlider - val) < 0.2 ? HubTheme.amber.opacity(0.22) : HubTheme.bg.opacity(0.6), in: RoundedRectangle(cornerRadius: 9))
+                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(abs(tempSlider - val) < 0.2 ? HubTheme.amber : HubTheme.border, lineWidth: 1))
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(14)
+        .hubCard(cornerRadius: 20)
+    }
+
+    // MARK: - 6. Refoss Smart Plugs with Live Watt & kWh Energy Monitoring
+
+    private var refossPlugsSection: some View {
+        let allPlugs = state?.plugs ?? []
+        let filtered = selectedRoom == .all ? allPlugs : allPlugs.filter { $0.room.lowercased() == selectedRoom.rawValue.lowercased() }
+
         return Group {
-            if !roomDevs.isEmpty {
+            if !filtered.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Label(roomName, systemImage: roomIcon)
+                        Label("Refoss Steckdosen & Strommessung", systemImage: "powerplug.fill")
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(roomColor)
-                        Spacer()
-                        Text("\(roomDevs.count) Geräte")
-                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(String(format: "Monat: %.2f kWh", state?.summary.monthKwh ?? 0))
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundStyle(HubTheme.emerald)
                     }
                     .padding(.horizontal, 4)
 
                     let cols = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
                     LazyVGrid(columns: cols, spacing: 10) {
-                        ForEach(roomDevs) { dev in
-                            HomeKitDeviceTile(device: dev) {
-                                Task { await client.toggleSmartDevice(dev) }
-                            }
+                        ForEach(filtered) { plug in
+                            RefossPlugCard(
+                                plug: plug,
+                                onToggle: {
+                                    Task { await client.toggleSmartPlug(plug) }
+                                },
+                                onOpenChart: {
+                                    Haptics.light()
+                                    selectedPlugForChart = plug
+                                }
+                            )
                         }
                     }
                 }
@@ -389,81 +619,174 @@ struct SmartHomeView: View {
         }
     }
 
-    // MARK: - 7. Home Assistant & TECHO5 Bridge Card
+    // MARK: - 7. Media, TV, Echo Show 5 & Single Clean HomeServer PC Card
 
-    private var homeAssistantBridgeCard: some View {
-        let haOnline = state?.haOnline ?? false
-        let haURL = "http://\(client.activePiHost):8123"
+    private var mediaAndPcSection: some View {
+        let allMedia = state?.mediaPlayers ?? []
+        let filteredMedia = selectedRoom == .all ? allMedia : allMedia.filter { $0.room.lowercased() == selectedRoom.rawValue.lowercased() }
+        let sec = state?.security
+
         return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                IconBadge(symbol: "house.and.flag.fill", colors: [HubTheme.sky, HubTheme.indigo], size: 38, iconSize: 17)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Home Assistant & Echo Show 5 (TECHO5)")
-                        .font(.system(size: 14, weight: .heavy))
-                    Text(haOnline ? "Pi 4 Server (:8123) aktiv • Synchron mit TECHO5" : "Home Assistant startet auf Port 8123…")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
+            HStack {
+                Label("Media, TV & HomeServer", systemImage: "tv.and.hifispeaker.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.secondary)
                 Spacer()
-                StatusBadgePill(text: haOnline ? "HA AKTIV" : "STARTET", active: haOnline)
             }
+            .padding(.horizontal, 4)
 
-            HStack(spacing: 8) {
-                Button {
-                    Haptics.light()
-                    if let u = URL(string: haURL) { openURL(u) }
-                } label: {
-                    Label("Home Assistant öffnen (:8123)", systemImage: "safari.fill")
-                        .font(.system(size: 12, weight: .bold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 9)
-                        .background(LinearGradient(colors: [HubTheme.sky, HubTheme.indigo], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 11))
-                        .foregroundStyle(.white)
+            let cols = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+            LazyVGrid(columns: cols, spacing: 10) {
+                ForEach(filteredMedia) { media in
+                    Button {
+                        Haptics.light()
+                        selectedMedia = media
+                    } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                IconBadge(
+                                    symbol: media.icon,
+                                    colors: media.isOn ? [HubTheme.purple, HubTheme.sky] : [.gray, .gray.opacity(0.6)],
+                                    size: 36,
+                                    iconSize: 16
+                                )
+                                Spacer()
+                                StatusBadgePill(
+                                    text: media.isPlaying ? "SPIELT" : (media.isOn ? "BEREIT" : "STANDBY"),
+                                    active: media.isOn,
+                                    activeColor: media.isPlaying ? HubTheme.emerald : HubTheme.sky
+                                )
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(media.name)
+                                    .font(.system(size: 13, weight: .heavy))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                Text(media.subtitle)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(12)
+                        .hubCard(cornerRadius: 18, highlight: media.isPlaying ? HubTheme.purple : nil)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
 
-                Button {
-                    Haptics.light()
-                    if let u = URL(string: "http://192.168.0.111:8181") { openURL(u) }
-                } label: {
-                    Label("TECHO5 Setup", systemImage: "display")
-                        .font(.system(size: 12, weight: .bold))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                        .background(HubTheme.cardElevated, in: RoundedRectangle(cornerRadius: 11))
-                        .overlay(RoundedRectangle(cornerRadius: 11).stroke(HubTheme.border, lineWidth: 1))
-                        .foregroundStyle(.white)
+                // Single Clean HomeServer PC Tile (No duplicate "Steckdose PC"!)
+                if selectedRoom == .all || selectedRoom == .living {
+                    let pcOn = sec?.pcOnline ?? false
+                    Button {
+                        Task {
+                            await client.sendJellyAction(pcOn ? "/api/shutdown" : "/api/wake", fallbackMsg: pcOn ? "💤 PC geht in 0W Ruhezustand…" : "⚡ Wake-on-LAN gesendet!")
+                            await client.refreshSmartHome()
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                IconBadge(
+                                    symbol: "desktopcomputer",
+                                    colors: pcOn ? [HubTheme.emerald, .teal] : [.gray, .gray.opacity(0.6)],
+                                    size: 36,
+                                    iconSize: 16
+                                )
+                                Spacer()
+                                StatusBadgePill(text: pcOn ? "~\(sec?.pcWatts ?? 115) W" : "0W AUS", active: pcOn)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("HomeServer PC")
+                                    .font(.system(size: 13, weight: .heavy))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                Text(pcOn ? "\(sec?.pcMode ?? "Server-Modus") • Tippen = 0W Standby" : "Aus • Tippen = Aufwecken")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(12)
+                        .hubCard(cornerRadius: 18, highlight: pcOn ? HubTheme.emerald.opacity(0.45) : nil)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
-        .padding(14)
-        .hubCard(cornerRadius: 18)
+    }
+
+    // MARK: - 8. Smart Automations & Push Alarms (ntfy)
+
+    private var automationsSection: some View {
+        let autos = state?.automations ?? []
+        return Group {
+            if !autos.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Label("Aktive Automationen & Push-Alarme", systemImage: "bell.badge.waveform.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("via ntfy Push")
+                            .font(.system(size: 10.5, weight: .bold))
+                            .foregroundStyle(HubTheme.amber)
+                    }
+                    .padding(.horizontal, 4)
+
+                    VStack(spacing: 8) {
+                        ForEach(autos) { auto in
+                            HStack(spacing: 12) {
+                                IconBadge(
+                                    symbol: auto.icon,
+                                    colors: auto.isEnabled ? [HubTheme.indigo, HubTheme.sky] : [.gray, .gray.opacity(0.6)],
+                                    size: 34,
+                                    iconSize: 15
+                                )
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(auto.name)
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundStyle(.white)
+                                    Text(auto.subtitle)
+                                        .font(.system(size: 10.5))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Toggle("", isOn: Binding(
+                                    get: { auto.isEnabled },
+                                    set: { newVal in
+                                        Task { await client.toggleAutomation(id: auto.id, enabled: newVal) }
+                                    }
+                                ))
+                                .labelsHidden()
+                                .tint(HubTheme.emerald)
+                            }
+                            .padding(11)
+                            .hubCard(cornerRadius: 16)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
-// MARK: - HomeKit Light Tile with Touch Slider
+// MARK: - Subcomponents
 
-private struct HomeKitLightTile: View {
+private struct CompactLightTile: View {
     let light: SmartLightItem
     let onToggle: () -> Void
-    let onBrightnessChange: (Int) -> Void
     let onOpenDetail: () -> Void
 
-    @State private var localBri: Double = 100
-    @State private var isDragging = false
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Button(action: onToggle) {
                     ZStack {
                         Circle()
                             .fill(light.isOn ? light.accentColor.opacity(0.28) : Color.white.opacity(0.06))
-                            .frame(width: 40, height: 40)
-                            .shadow(color: light.isOn ? light.accentColor.opacity(0.5) : .clear, radius: 8)
+                            .frame(width: 34, height: 34)
                         Image(systemName: light.isOn ? "lightbulb.fill" : "lightbulb")
-                            .font(.system(size: 18, weight: .bold))
+                            .font(.system(size: 15, weight: .bold))
                             .foregroundStyle(light.isOn ? light.accentColor : .secondary)
                     }
                 }
@@ -473,8 +796,8 @@ private struct HomeKitLightTile: View {
 
                 Button(action: onOpenDetail) {
                     Image(systemName: "slider.horizontal.3")
-                        .font(.system(size: 12, weight: .bold))
-                        .padding(7)
+                        .font(.system(size: 10.5, weight: .bold))
+                        .padding(6)
                         .background(Color.white.opacity(0.07), in: Circle())
                         .foregroundStyle(.secondary)
                 }
@@ -482,123 +805,319 @@ private struct HomeKitLightTile: View {
             }
 
             Button(action: onToggle) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(light.name)
-                        .font(.system(size: 13.5, weight: .heavy))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(light.name.replacingOccurrences(of: "Wohnzimmer ", with: ""))
+                        .font(.system(size: 12, weight: .heavy))
                         .foregroundStyle(light.isOn ? .white : .secondary)
                         .lineLimit(1)
-                    Text(light.isOn ? "\(Int(localBri))% • \(light.sceneName ?? "Warmweiß")" : "Aus")
-                        .font(.system(size: 11, weight: .semibold))
+                    Text(light.isOn ? "\(light.brightness)% • \(light.sceneName ?? "An")" : "Aus")
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(light.isOn ? light.accentColor : .secondary)
                         .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
-
-            // Interactive Brightness Track along the foot (just like TECHO5 & Apple Home!)
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.white.opacity(0.08))
-                    if light.isOn {
-                        Capsule()
-                            .fill(
-                                LinearGradient(
-                                    colors: [light.accentColor.opacity(0.7), light.accentColor],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .frame(width: max(10, geo.size.width * CGFloat(localBri / 100.0)))
-                    }
-                }
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { val in
-                            isDragging = true
-                            let pct = max(10, min(100, Double(val.location.x / max(1, geo.size.width)) * 100.0))
-                            localBri = pct
-                        }
-                        .onEnded { _ in
-                            isDragging = false
-                            Haptics.light()
-                            onBrightnessChange(Int(localBri.rounded()))
-                        }
-                )
-            }
-            .frame(height: 8)
         }
-        .padding(12)
-        .hubCard(cornerRadius: 18, highlight: light.isOn ? light.accentColor : nil)
-        .onAppear {
-            localBri = Double(light.brightness)
-        }
-        .onChange(of: light.brightness) { _, newVal in
-            if !isDragging { localBri = Double(newVal) }
-        }
+        .padding(10)
+        .background(HubTheme.bg.opacity(0.65), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(light.isOn ? light.accentColor.opacity(0.5) : HubTheme.border, lineWidth: 1))
     }
 }
 
-// MARK: - HomeKit Device Tile
-
-private struct HomeKitDeviceTile: View {
-    let device: SmartDeviceItem
-    let onTap: () -> Void
-
-    private var tileColor: Color {
-        if !device.online { return .gray }
-        switch device.category {
-        case "display": return HubTheme.sky
-        case "speaker", "media": return HubTheme.purple
-        case "bridge": return HubTheme.indigo
-        case "pc_plug": return HubTheme.emerald
-        default: return device.isOn ? HubTheme.emerald : .gray
-        }
-    }
+private struct RefossPlugCard: View {
+    let plug: SmartPlugEnergyItem
+    let onToggle: () -> Void
+    let onOpenChart: () -> Void
 
     var body: some View {
-        Button(action: onTap) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Button(action: onToggle) {
                     ZStack {
                         Circle()
-                            .fill(device.isOn ? tileColor.opacity(0.24) : Color.white.opacity(0.06))
+                            .fill(plug.isOn ? HubTheme.emerald.opacity(0.25) : Color.white.opacity(0.06))
                             .frame(width: 38, height: 38)
-                        Image(systemName: device.icon)
+                        Image(systemName: plug.icon)
                             .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(device.isOn ? tileColor : .secondary)
-                    }
-                    Spacer()
-                    if device.protectedDevice {
-                        HStack(spacing: 3) {
-                            Image(systemName: "lock.fill").font(.system(size: 8))
-                            Text("SAFE").font(.system(size: 8.5, weight: .heavy))
-                        }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(HubTheme.emerald.opacity(0.18), in: Capsule())
-                        .foregroundStyle(HubTheme.emerald)
-                    } else {
-                        StatusBadgePill(text: device.isOn ? "AN" : "BEREIT", active: device.isOn, activeColor: tileColor)
+                            .foregroundStyle(plug.isOn ? HubTheme.emerald : .secondary)
                     }
                 }
+                .buttonStyle(.plain)
 
+                Spacer()
+
+                Button(action: onOpenChart) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "chart.bar.xaxis")
+                        Text(String(format: "%.2f kWh", plug.monthKwh))
+                    }
+                    .font(.system(size: 9.5, weight: .bold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(HubTheme.sky.opacity(0.16), in: Capsule())
+                    .foregroundStyle(HubTheme.sky)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Button(action: onToggle) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(device.name)
+                    Text(plug.name.replacingOccurrences(of: "Refoss ", with: ""))
                         .font(.system(size: 13, weight: .heavy))
                         .foregroundStyle(.white)
                         .lineLimit(1)
-                    Text(device.subtitle)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        Text(plug.isOn ? "AN" : "AUS")
+                            .font(.system(size: 10.5, weight: .heavy))
+                            .foregroundStyle(plug.isOn ? HubTheme.emerald : .secondary)
+                        Text("• \(String(format: "%.1f W", plug.powerW)) • Heute \(plug.todayWh) Wh")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(12)
+        .hubCard(cornerRadius: 18, highlight: plug.isOn ? HubTheme.emerald.opacity(0.55) : nil)
+    }
+}
+
+// MARK: - Refoss 14-Day Energy Chart Sheet
+
+struct PlugEnergyDetailSheet: View {
+    @EnvironmentObject var client: HubClient
+    @Environment(\.dismiss) private var dismiss
+    let plug: SmartPlugEnergyItem
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    HStack(spacing: 12) {
+                        IconBadge(symbol: plug.icon, colors: [HubTheme.emerald, HubTheme.sky], size: 44, iconSize: 20)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(plug.name)
+                                .font(.headline)
+                            Text("\(plug.room) • \(plug.ip) • \(String(format: "%.1f V", plug.voltageV))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            Task { await client.toggleSmartPlug(plug) }
+                        } label: {
+                            Text(plug.isOn ? "Ausschalten" : "Einschalten")
+                                .font(.caption.bold())
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 7)
+                                .background(plug.isOn ? HubTheme.emerald : HubTheme.cardElevated, in: Capsule())
+                                .foregroundStyle(.white)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(14)
+                    .hubCard(cornerRadius: 18)
+
+                    HStack(spacing: 10) {
+                        kpiBox(title: "AKTUELL", val: String(format: "%.1f W", plug.powerW), color: HubTheme.amber)
+                        kpiBox(title: "HEUTE", val: "\(plug.todayWh) Wh", color: HubTheme.sky)
+                        kpiBox(title: "30 TAGE", val: String(format: "%.2f kWh", plug.monthKwh), color: HubTheme.emerald)
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("TÄGLICHER STROMVERBRAUCH (WH)")
+                            .font(.system(size: 10, weight: .heavy))
+                            .foregroundStyle(.secondary)
+
+                        if plug.history.isEmpty {
+                            Text("Noch keine Verbrauchsdaten aufgezeichnet.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 20)
+                        } else {
+                            Chart(plug.history) { item in
+                                BarMark(
+                                    x: .value("Tag", String(item.date.suffix(5))),
+                                    y: .value("Wh", item.wh)
+                                )
+                                .foregroundStyle(LinearGradient(colors: [HubTheme.sky, HubTheme.emerald], startPoint: .top, endPoint: .bottom))
+                                .cornerRadius(4)
+                            }
+                            .frame(height: 190)
+                        }
+                    }
+                    .padding(14)
+                    .hubCard(cornerRadius: 18)
+                }
+                .padding(14)
+            }
+            .background(HubTheme.bg.ignoresSafeArea())
+            .navigationTitle("Strommessung")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Fertig") { dismiss() }
                 }
             }
-            .padding(12)
-            .hubCard(cornerRadius: 18, highlight: device.isOn ? tileColor.opacity(0.55) : nil)
         }
-        .buttonStyle(.plain)
+    }
+
+    private func kpiBox(title: String, val: String, color: Color) -> some View {
+        VStack(spacing: 4) {
+            Text(title).font(.system(size: 9.5, weight: .heavy)).foregroundStyle(.secondary)
+            Text(val).font(.system(size: 16, weight: .heavy)).foregroundStyle(color)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .hubCard(cornerRadius: 14)
+    }
+}
+
+// MARK: - Media & TV Control Sheet (HomePod, Echo Show 5, Chromecast HD, LG TV)
+
+struct MediaPlayerDetailSheet: View {
+    @EnvironmentObject var client: HubClient
+    @Environment(\.dismiss) private var dismiss
+    let media: SmartMediaItem
+
+    @State private var volume: Double = 50
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 18) {
+                HStack(spacing: 12) {
+                    IconBadge(symbol: media.icon, colors: [HubTheme.purple, HubTheme.sky], size: 48, iconSize: 22)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(media.name)
+                            .font(.headline)
+                        Text("\(media.brand) • \(media.room)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(media.subtitle)
+                            .font(.caption.bold())
+                            .foregroundStyle(HubTheme.sky)
+                    }
+                    Spacer()
+                }
+                .padding(16)
+                .hubCard(cornerRadius: 18)
+
+                // Playback & Power Controls
+                HStack(spacing: 14) {
+                    Button {
+                        Task { await client.controlMediaPlayer(id: media.id, haEntityId: media.haEntityId, action: "previous") }
+                    } label: {
+                        Image(systemName: "backward.fill")
+                            .font(.title3.bold())
+                            .frame(width: 54, height: 54)
+                            .background(HubTheme.cardElevated, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        Task { await client.controlMediaPlayer(id: media.id, haEntityId: media.haEntityId, action: "play_pause") }
+                    } label: {
+                        Image(systemName: media.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.title2.bold())
+                            .frame(width: 68, height: 68)
+                            .background(LinearGradient(colors: [HubTheme.purple, HubTheme.sky], startPoint: .topLeading, endPoint: .bottomTrailing), in: Circle())
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        Task { await client.controlMediaPlayer(id: media.id, haEntityId: media.haEntityId, action: "next") }
+                    } label: {
+                        Image(systemName: "forward.fill")
+                            .font(.title3.bold())
+                            .frame(width: 54, height: 54)
+                            .background(HubTheme.cardElevated, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                // Volume Slider
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label("Lautstärke", systemImage: "speaker.wave.2.fill")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(Int(volume)) %")
+                            .font(.caption.bold())
+                            .foregroundStyle(HubTheme.sky)
+                    }
+                    Slider(value: $volume, in: 0...100, step: 5) { editing in
+                        if !editing {
+                            Task { await client.controlMediaPlayer(id: media.id, haEntityId: media.haEntityId, action: "volume", volumePct: Int(volume)) }
+                        }
+                    }
+                    .tint(HubTheme.sky)
+                }
+                .padding(14)
+                .hubCard(cornerRadius: 18)
+
+                // Device Specific Actions (Echo Show Dashboard or TV Power)
+                if media.id == "echo_show_5" {
+                    Button {
+                        Task { await client.controlMediaPlayer(id: media.id, haEntityId: media.haEntityId, action: "echo_dashboard") }
+                    } label: {
+                        Label("Smart-Home-Dashboard auf Echo Show 5 öffnen", systemImage: "rectangle.grid.2x2.fill")
+                            .font(.subheadline.bold())
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(HubTheme.emerald, in: RoundedRectangle(cornerRadius: 14))
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    HStack(spacing: 10) {
+                        Button {
+                            Task { await client.controlMediaPlayer(id: media.id, haEntityId: media.haEntityId, action: "turn_on") }
+                        } label: {
+                            Label("Einschalten / Wecken", systemImage: "power")
+                                .font(.caption.bold())
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 11)
+                                .background(HubTheme.emerald.opacity(0.22), in: RoundedRectangle(cornerRadius: 12))
+                                .foregroundStyle(HubTheme.emerald)
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            Task { await client.controlMediaPlayer(id: media.id, haEntityId: media.haEntityId, action: "turn_off") }
+                        } label: {
+                            Label("Standby / Aus", systemImage: "powersleep")
+                                .font(.caption.bold())
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 11)
+                                .background(HubTheme.rose.opacity(0.22), in: RoundedRectangle(cornerRadius: 12))
+                                .foregroundStyle(HubTheme.rose)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                Spacer()
+            }
+            .padding(16)
+            .background(HubTheme.bg.ignoresSafeArea())
+            .navigationTitle(media.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Fertig") { dismiss() }
+                }
+            }
+            .onAppear {
+                volume = Double(media.volumePct)
+            }
+        }
+        .presentationDetents([.medium])
     }
 }
 
@@ -643,7 +1162,6 @@ struct LightDetailSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    // Header Toggle & Brightness
                     VStack(spacing: 12) {
                         HStack {
                             IconBadge(symbol: "lightbulb.fill", colors: [HubTheme.amber, .orange], size: 44, iconSize: 20)
@@ -681,7 +1199,6 @@ struct LightDetailSheet: View {
                     .padding(14)
                     .hubCard(cornerRadius: 18)
 
-                    // White Temperature Presets
                     VStack(alignment: .leading, spacing: 10) {
                         Text("WEISSTÖNE (FARBTEMPERATUR)")
                             .font(.system(size: 10, weight: .heavy))
@@ -707,7 +1224,6 @@ struct LightDetailSheet: View {
                     .padding(14)
                     .hubCard(cornerRadius: 18)
 
-                    // RGB Color Presets
                     VStack(alignment: .leading, spacing: 10) {
                         Text("VOLLFARBEN (RGB)")
                             .font(.system(size: 10, weight: .heavy))
@@ -738,7 +1254,6 @@ struct LightDetailSheet: View {
                     .padding(14)
                     .hubCard(cornerRadius: 18)
 
-                    // Dynamic WiZ Scenes
                     VStack(alignment: .leading, spacing: 10) {
                         Text("DYNAMISCHE WIZ LICHT-MODI")
                             .font(.system(size: 10, weight: .heavy))
