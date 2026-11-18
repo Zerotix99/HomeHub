@@ -192,3 +192,18 @@ struct SmartAutomationItem: Codable, Identifiable {
         case isEnabled = "is_enabled"
     }
 }
+
+struct HubNotificationItem: Codable, Identifiable {
+    let id: String
+    let title: String
+    let body: String
+    let tag: String?
+    let url: String?
+    let timestamp: Int
+}
+
+struct HubNotificationsResponse: Codable {
+    let ok: Bool
+    let notifications: [HubNotificationItem]
+}
+

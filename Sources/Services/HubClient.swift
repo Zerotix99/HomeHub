@@ -35,7 +35,7 @@ enum Haptics {
 }
 
 @MainActor
-final class HubClient: ObservableObject {
+final class HubClient: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     @AppStorage("pi_tailscale_ip") var piTailscaleIP: String = "100.100.2.103"
     @AppStorage("pi_lan_ip") var piLanIP: String = "192.168.0.87"
     @AppStorage("pc_tailscale_ip") var pcTailscaleIP: String = "100.77.172.23"
@@ -65,6 +65,12 @@ final class HubClient: ObservableObject {
     private var lastWindowOpen: Bool?
     private var didRequestNotifAuth: Bool = false
 
+    // Central Native Notification System
+    private var lastNotifTimestamp: Int = Int(Date().timeIntervalSince1970) - 15
+    private var notificationPollingTask: Task<Void, Never>?
+    private var processedNotifIds: Set<String> = []
+    private var seenDealIds: Set<String> = []
+
     // Deal Radar state
     @Published var dealState: DealStateResponse?
     @Published var deals: [DealItem] = []
@@ -84,6 +90,79 @@ final class HubClient: ObservableObject {
 
     let deviceUDID: String = "00008150-0011515234DA401C"
     let githubLatestIPAURL: String = "https://github.com/Zerotix99/HomeHub/releases/latest/download/HomeHub.ipa"
+
+    override init() {
+        super.init()
+        UNUserNotificationCenter.current().delegate = self
+        ensureNotificationAuth()
+        startNotificationPolling()
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound, .badge, .list])
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        completionHandler()
+    }
+
+    func startNotificationPolling() {
+        notificationPollingTask?.cancel()
+        notificationPollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_500_000_000)
+                guard let self else { break }
+                await self.pollPiNotifications()
+            }
+        }
+    }
+
+    func pollPiNotifications() async {
+        guard isConnected || connectionMode != .auto else { return }
+        guard let url = URL(string: "\(jellyBaseURL)/api/notifications?since=\(lastNotifTimestamp)") else { return }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 2.5
+        do {
+            let (data, resp) = try await session.data(for: req)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }
+            let res = try JSONDecoder().decode(HubNotificationsResponse.self, from: data)
+            for notif in res.notifications {
+                if notif.timestamp > lastNotifTimestamp && !processedNotifIds.contains(notif.id) {
+                    processedNotifIds.insert(notif.id)
+                    lastNotifTimestamp = max(lastNotifTimestamp, notif.timestamp)
+                    postNativeNotification(title: notif.title, body: notif.body, tag: notif.tag)
+                }
+            }
+        } catch {}
+    }
+
+    func postNativeNotification(title: String, body: String, tag: String? = nil) {
+        ensureNotificationAuth()
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        if let tag {
+            content.categoryIdentifier = tag
+        }
+        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+
+        showToast(title)
+        if tag == "washer" || tag == "door" || tag == "window" {
+            Haptics.warning()
+        } else {
+            Haptics.success()
+        }
+    }
 
     private let session: URLSession = {
         let cfg = URLSessionConfiguration.default
@@ -208,12 +287,46 @@ final class HubClient: ObservableObject {
             let res = try? JSONDecoder().decode(ActionResponse.self, from: data)
             Haptics.success()
             showToast(res?.message ?? fallbackMsg)
-            try? await Task.sleep(nanoseconds: 1_200_000_000)
-            await refreshJelly()
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            async let j: () = refreshJelly()
+            async let s: () = refreshSmartHome()
+            _ = await (j, s)
         } catch {
             Haptics.error()
             showToast("Verbindungsfehler zum Pi")
         }
+    }
+
+    func setPcMode(serverMode: Bool) async {
+        Haptics.medium()
+        let endpoint = serverMode ? "/api/services/start" : "/api/services/stop"
+        let fallback = serverMode ? "⚡ HomeServer-Modus aktiviert!" : "🎮 Gaming-Modus aktiviert!"
+        do {
+            guard let url = URL(string: "\(jellyBaseURL)\(endpoint)") else { return }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            let (data, _) = try await session.data(for: req)
+            let res = try? JSONDecoder().decode(ActionResponse.self, from: data)
+            Haptics.success()
+            showToast(res?.message ?? fallback)
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            async let j: () = refreshJelly()
+            async let s: () = refreshSmartHome()
+            _ = await (j, s)
+        } catch {
+            Haptics.error()
+            showToast("Verbindungsfehler zum Pi")
+        }
+    }
+
+    func shutdownPc() async {
+        Haptics.heavy()
+        await sendJellyAction("/api/shutdown", fallbackMsg: "💤 PC geht in 0W Ruhezustand…")
+    }
+
+    func wakePc() async {
+        Haptics.medium()
+        await sendJellyAction("/api/wake", fallbackMsg: "⚡ Wake-on-LAN gesendet!")
     }
 
     // MARK: - Deal Radar API
@@ -242,8 +355,28 @@ final class HubClient: ObservableObject {
         do {
             let items: [DealItem] = try await getJSON(urlStr)
             deals = items
+            notifyIfNewDeals(items)
         } catch {
             dealError = "Fehler beim Laden der Deals"
+        }
+    }
+
+    private func notifyIfNewDeals(_ newDeals: [DealItem]) {
+        guard !seenDealIds.isEmpty else {
+            for d in newDeals { seenDealIds.insert(d.id) }
+            return
+        }
+        for d in newDeals {
+            if !seenDealIds.contains(d.id) {
+                seenDealIds.insert(d.id)
+                if d.isTopDeal {
+                    postNativeNotification(
+                        title: "🎯 Neuer Top-Deal: \(d.title)",
+                        body: "\(d.price) € • \(d.cleanLocation) (Score: \(d.score))",
+                        tag: "deal"
+                    )
+                }
+            }
         }
     }
 
@@ -302,22 +435,15 @@ final class HubClient: ObservableObject {
     }
 
     func sendTestPush() async {
-        do {
-            guard let url = URL(string: "\(dealBaseURL)/api/test-ntfy") else { return }
-            var req = URLRequest(url: url)
-            req.httpMethod = "POST"
-            let (_, resp) = try await session.data(for: req)
-            if (resp as? HTTPURLResponse)?.statusCode == 200 {
-                Haptics.success()
-                showToast("🔔 Test-Push an ntfy gesendet!")
-            } else {
-                Haptics.error()
-                showToast("Test-Push fehlgeschlagen")
-            }
-        } catch {
-            Haptics.error()
-            showToast("Test-Push fehlgeschlagen")
-        }
+        postNativeNotification(
+            title: "🔔 Native iOS Test-Mitteilung",
+            body: "HomeHub empfängt alle System- & Smarthome-Benachrichtigungen direkt und nativ!",
+            tag: "test"
+        )
+        guard let url = URL(string: "\(dealBaseURL)/api/test-ntfy") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        _ = try? await session.data(for: req)
     }
 
     func fetchDealConfig() async {
@@ -479,45 +605,22 @@ final class HubClient: ObservableObject {
 
     // MARK: - Smart Home API (HomeKit / HA / WiZ / TECHO5)
 
-    private func ensureNotificationAuth() {
-        guard !didRequestNotifAuth else { return }
-        didRequestNotifAuth = true
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
-    }
-
-    private func postLocalSensorNotification(title: String, body: String) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
-        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
-    }
-
     func refreshSmartHome() async {
         ensureNotificationAuth()
         do {
             let st: SmartHomeStateResponse = try await getJSON("\(jellyBaseURL)/api/smarthome?t=\(Int(Date().timeIntervalSince1970))")
             if let prevDoor = lastDoorOpen, prevDoor != st.security.doorOpen {
                 if st.security.doorOpen {
-                    Haptics.warning()
-                    showToast("🚪 Wohnungstür wurde geöffnet!")
-                    postLocalSensorNotification(title: "🚪 Wohnungstür geöffnet", body: "Die Wohnungstür wurde gerade geöffnet.")
+                    postNativeNotification(title: "🚪 Wohnungstür geöffnet", body: "Die Wohnungstür wurde gerade geöffnet.", tag: "door")
                 } else {
-                    Haptics.light()
-                    showToast("🔒 Wohnungstür geschlossen")
-                    postLocalSensorNotification(title: "🔒 Wohnungstür geschlossen", body: "Die Wohnungstür ist wieder geschlossen.")
+                    postNativeNotification(title: "🔒 Wohnungstür geschlossen", body: "Die Wohnungstür ist wieder geschlossen.", tag: "door")
                 }
             }
             if let prevWin = lastWindowOpen, prevWin != st.security.windowOpen {
                 if st.security.windowOpen {
-                    Haptics.warning()
-                    showToast("🪟 Wohnzimmer-Fenster geöffnet!")
-                    postLocalSensorNotification(title: "🪟 Wohnzimmer-Fenster offen", body: "Das Wohnzimmer-Fenster wurde geöffnet (Heizungs-Schutz aktiv).")
+                    postNativeNotification(title: "🪟 Wohnzimmer-Fenster offen", body: "Das Wohnzimmer-Fenster wurde geöffnet (Heizungs-Schutz aktiv).", tag: "window")
                 } else {
-                    Haptics.light()
-                    showToast("✅ Wohnzimmer-Fenster geschlossen")
-                    postLocalSensorNotification(title: "✅ Wohnzimmer-Fenster zu", body: "Das Wohnzimmer-Fenster wurde wieder geschlossen.")
+                    postNativeNotification(title: "✅ Wohnzimmer-Fenster zu", body: "Das Wohnzimmer-Fenster wurde wieder geschlossen.", tag: "window")
                 }
             }
             lastDoorOpen = st.security.doorOpen

@@ -318,31 +318,31 @@ struct JellyControlView: View {
             // 2 Mode Action Tiles: HomeServer vs Gaming
             HStack(spacing: 10) {
                 Button {
-                    Task { await client.sendJellyAction("/api/services/start", fallbackMsg: "▶️ HomeServer-Dienste gestartet!") }
+                    Task { await client.setPcMode(serverMode: true) }
                 } label: {
                     HStack(spacing: 10) {
-                        IconBadge(symbol: "play.fill", colors: [HubTheme.indigo, HubTheme.sky], size: 34, iconSize: 14)
+                        IconBadge(symbol: "server.rack", colors: [HubTheme.emerald, Color.teal], size: 34, iconSize: 14)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text("Server-Dienste")
+                            Text("⚡ Server-Modus")
                                 .font(.system(size: 13, weight: .bold))
-                            Text(isOnline && isServerMode ? "Aktiv • Läuft" : "Alle starten")
+                            Text(isOnline && isServerMode ? "Aktiv • Dienste laufen" : "Server starten")
                                 .font(.system(size: 10.5))
                                 .foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 0)
                     }
                     .padding(12)
-                    .hubCard(cornerRadius: 16, highlight: (isOnline && isServerMode) ? HubTheme.indigo : nil)
+                    .hubCard(cornerRadius: 16, highlight: (isOnline && isServerMode) ? HubTheme.emerald : nil)
                 }
                 .buttonStyle(.plain)
 
                 Button {
-                    Task { await client.sendJellyAction("/api/services/stop", fallbackMsg: "🎮 Gaming-Modus aktiviert!") }
+                    Task { await client.setPcMode(serverMode: false) }
                 } label: {
                     HStack(spacing: 10) {
                         IconBadge(symbol: "gamecontroller.fill", colors: [HubTheme.pink, HubTheme.purple], size: 34, iconSize: 14)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text("Gaming-Modus")
+                            Text("🎮 Gaming-Modus")
                                 .font(.system(size: 13, weight: .bold))
                             Text(isOnline && !isServerMode ? "Aktiv • Max FPS" : "Dienste pausieren")
                                 .font(.system(size: 10.5))
