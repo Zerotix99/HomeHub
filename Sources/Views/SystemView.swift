@@ -124,8 +124,31 @@ struct SystemView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                StatusBadgePill(text: "v3.4", active: true, activeColor: HubTheme.sky)
+                StatusBadgePill(text: "v3.5.0", active: true, activeColor: HubTheme.sky)
             }
+
+            // v3.5.0 Changelog Box
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                        .foregroundStyle(HubTheme.amber)
+                        .font(.caption.bold())
+                    Text("Neu in Version 3.5.0 (Build 8):")
+                        .font(.system(size: 11.5, weight: .heavy))
+                        .foregroundStyle(.white)
+                }
+                Text("• 🎬 Kino-Modus startet TV, öffnet Jellyfin, schließt Rollo & schaltet rotes Licht ein")
+                Text("• ⚡ Symmetrisches 2x2 Action-Grid in JellyControl (Server, Gaming, RGB, 0W)")
+                Text("• 💤 Zuhause PC-Kachel: 1-Tap versetzt direkt in 0W Ruhezustand (oder Aufwecken)")
+                Text("• 🔔 Native iOS-Push-Mitteilungen direkt über UNUserNotificationCenter ohne ntfy")
+                Text("• 💡 Schreibtischlampen-Symbole & nahtlose SideStore-Aktualisierung")
+            }
+            .font(.system(size: 10.5))
+            .foregroundStyle(.white.opacity(0.85))
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.1), lineWidth: 1))
 
             // Cellular Refresh Tip Banner
             HStack(alignment: .top, spacing: 8) {
@@ -144,6 +167,25 @@ struct SystemView: View {
             .padding(10)
             .background(HubTheme.emerald.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(HubTheme.emerald.opacity(0.35), lineWidth: 1))
+
+            // Copyable SideStore Source URL
+            Button {
+                Haptics.light()
+                let sourceURL = "http://\(client.activePiHost):5050/source.json"
+                UIPasteboard.general.string = sourceURL
+                client.showToast("📋 SideStore-Quelle kopiert!")
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "doc.on.doc.fill")
+                        .font(.caption.bold())
+                    Text("SideStore Community-Quelle kopieren (:5050/source.json)")
+                        .font(.system(size: 11, weight: .bold))
+                }
+                .foregroundStyle(HubTheme.sky)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.plain)
 
             // 1-Tap SideStore Install / Update
             Button {

@@ -30,7 +30,6 @@ struct SmartHomeView: View {
     @State private var isDraggingRollo = false
     @State private var tempSlider: Double = 21.5
     @State private var isDraggingTemp = false
-    @State private var showPcStandbyConfirm = false
 
     private var state: SmartHomeStateResponse? { client.smartHomeState }
 
@@ -262,10 +261,9 @@ struct SmartHomeView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 scenePill(id: "cozy", title: "Cozy Abend", icon: "flame.fill", colors: [HubTheme.amber, .orange])
-                scenePill(id: "server", title: "Server-Modus", icon: "server.rack", colors: [HubTheme.emerald, .teal])
+                scenePill(id: "cinema", title: "Kino & Rollo Zu", icon: "film.stack.fill", colors: [HubTheme.purple, HubTheme.indigo])
                 scenePill(id: "gaming", title: "Gaming Vibe", icon: "gamecontroller.fill", colors: [HubTheme.pink, HubTheme.purple])
                 scenePill(id: "bright", title: "Hell & Fokus", icon: "sun.max.fill", colors: [HubTheme.sky, HubTheme.emerald])
-                scenePill(id: "cinema", title: "Kino & Rollo Zu", icon: "film.stack.fill", colors: [HubTheme.purple, HubTheme.indigo])
                 scenePill(id: "all_off", title: "Lichter Aus", icon: "power", colors: [HubTheme.rose, .red])
             }
         }
@@ -620,185 +618,99 @@ struct SmartHomeView: View {
         }
     }
 
-    // MARK: - 7. Media, TV, Echo Show 5 & Dedicated HomeServer PC Dual-Mode Card
+    // MARK: - 7. Media, TV, Echo Show 5 & Single Clean HomeServer PC Tile
 
     private var mediaAndPcSection: some View {
         let allMedia = state?.mediaPlayers ?? []
         let filteredMedia = selectedRoom == .all ? allMedia : allMedia.filter { $0.room.lowercased() == selectedRoom.rawValue.lowercased() }
         let sec = state?.security
 
-        return VStack(alignment: .leading, spacing: 14) {
-            if !filteredMedia.isEmpty {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Label("Media & Audio (AirPlay / Cast / Echo)", systemImage: "tv.and.hifispeaker.fill")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 4)
-
-                    let cols = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
-                    LazyVGrid(columns: cols, spacing: 10) {
-                        ForEach(filteredMedia) { media in
-                            Button {
-                                Haptics.light()
-                                selectedMedia = media
-                            } label: {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    HStack {
-                                        IconBadge(
-                                            symbol: media.icon,
-                                            colors: media.isOn ? [HubTheme.purple, HubTheme.sky] : [.gray, .gray.opacity(0.6)],
-                                            size: 36,
-                                            iconSize: 16
-                                        )
-                                        Spacer()
-                                        StatusBadgePill(
-                                            text: media.isPlaying ? "SPIELT" : (media.isOn ? "BEREIT" : "STANDBY"),
-                                            active: media.isOn,
-                                            activeColor: media.isPlaying ? HubTheme.emerald : HubTheme.sky
-                                        )
-                                    }
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(media.name)
-                                            .font(.system(size: 13, weight: .heavy))
-                                            .foregroundStyle(.white)
-                                            .lineLimit(1)
-                                        Text(media.subtitle)
-                                            .font(.system(size: 10.5))
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                }
-                                .padding(12)
-                                .hubCard(cornerRadius: 18, highlight: media.isPlaying ? HubTheme.purple : nil)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
-
-            // Dedicated HomeServer PC Card with Dual-Mode Switcher (HomeServer vs Gaming)
-            if selectedRoom == .all || selectedRoom == .living {
-                homeServerPcControlCard(sec: sec)
-            }
-        }
-    }
-
-    private func homeServerPcControlCard(sec: SmartSecurityStatus?) -> some View {
-        let pcOn = sec?.pcOnline ?? false
-        let isServer = (sec?.pcMode ?? "").lowercased().contains("server") || (sec?.pcMode == nil)
-
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                IconBadge(
-                    symbol: "desktopcomputer",
-                    colors: pcOn ? (isServer ? [HubTheme.emerald, .teal] : [HubTheme.pink, HubTheme.purple]) : [.gray, .gray.opacity(0.6)],
-                    size: 38,
-                    iconSize: 18
-                )
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text("HomeServer PC")
-                            .font(.system(size: 15, weight: .heavy))
-                            .foregroundStyle(.white)
-                        if pcOn {
-                            Circle()
-                                .fill(isServer ? HubTheme.emerald : HubTheme.pink)
-                                .frame(width: 7, height: 7)
-                        }
-                    }
-                    Text(pcOn ? (isServer ? "⚡ Server-Modus aktiv (Dienste laufen)" : "🎮 Gaming-Modus aktiv (Max FPS)") : "0W Ausgeschaltet (Ruhezustand)")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(pcOn ? (isServer ? HubTheme.emerald : HubTheme.pink) : .secondary)
-                }
-                Spacer()
-                StatusBadgePill(text: pcOn ? "~\(sec?.pcWatts ?? 115) W" : "0W AUS", active: pcOn)
-            }
-
-            if pcOn {
-                // Interactive Mode Switcher Row: Server vs Gaming
-                HStack(spacing: 8) {
-                    Button {
-                        Task { await client.setPcMode(serverMode: true) }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "server.rack")
-                                .font(.system(size: 11.5, weight: .bold))
-                            Text("⚡ Server-Modus")
-                                .font(.system(size: 12, weight: .heavy))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 9)
-                        .background(isServer ? LinearGradient(colors: [HubTheme.emerald, Color.teal], startPoint: .leading, endPoint: .trailing) : LinearGradient(colors: [Color.white.opacity(0.06), Color.white.opacity(0.06)], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 12))
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(isServer ? HubTheme.emerald.opacity(0.8) : HubTheme.border, lineWidth: 1))
-                        .foregroundStyle(isServer ? .white : .secondary)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        Task { await client.setPcMode(serverMode: false) }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "gamecontroller.fill")
-                                .font(.system(size: 11.5, weight: .bold))
-                            Text("🎮 Gaming-Modus")
-                                .font(.system(size: 12, weight: .heavy))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 9)
-                        .background(!isServer ? LinearGradient(colors: [HubTheme.pink, HubTheme.purple], startPoint: .leading, endPoint: .trailing) : LinearGradient(colors: [Color.white.opacity(0.06), Color.white.opacity(0.06)], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 12))
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(!isServer ? HubTheme.pink.opacity(0.8) : HubTheme.border, lineWidth: 1))
-                        .foregroundStyle(!isServer ? .white : .secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                // 0W Standby Action
-                Button {
-                    showPcStandbyConfirm = true
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "powersleep")
-                            .font(.system(size: 11))
-                        Text("In 0W Ruhezustand versetzen")
-                            .font(.system(size: 11.5, weight: .medium))
-                    }
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Media, TV & HomeServer", systemImage: "tv.and.hifispeaker.fill")
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 5)
-                }
-                .buttonStyle(.plain)
-                .confirmationDialog("PC in Ruhezustand?", isPresented: $showPcStandbyConfirm, titleVisibility: .visible) {
-                    Button("💤 0W Ruhezustand aktivieren", role: .destructive) {
-                        Task { await client.shutdownPc() }
+                Spacer()
+            }
+            .padding(.horizontal, 4)
+
+            let cols = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+            LazyVGrid(columns: cols, spacing: 10) {
+                ForEach(filteredMedia) { media in
+                    Button {
+                        Haptics.light()
+                        selectedMedia = media
+                    } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                IconBadge(
+                                    symbol: media.icon,
+                                    colors: media.isOn ? [HubTheme.purple, HubTheme.sky] : [.gray, .gray.opacity(0.6)],
+                                    size: 36,
+                                    iconSize: 16
+                                )
+                                Spacer()
+                                StatusBadgePill(
+                                    text: media.isPlaying ? "SPIELT" : (media.isOn ? "BEREIT" : "STANDBY"),
+                                    active: media.isOn,
+                                    activeColor: media.isPlaying ? HubTheme.emerald : HubTheme.sky
+                                )
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(media.name)
+                                    .font(.system(size: 13, weight: .heavy))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                Text(media.subtitle)
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(12)
+                        .hubCard(cornerRadius: 18, highlight: media.isPlaying ? HubTheme.purple : nil)
                     }
-                    Button("Abbrechen", role: .cancel) {}
-                } message: {
-                    Text("Der PC wechselt in den 0-Watt Energiesparmodus. Dienste werden pausiert. Kann jederzeit über Wake-on-LAN geweckt werden.")
+                    .buttonStyle(.plain)
                 }
-            } else {
-                Button {
-                    Task { await client.wakePc() }
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: 13, weight: .bold))
-                        Text("⚡ PC Aufwecken (Wake-on-LAN)")
-                            .font(.system(size: 13, weight: .heavy))
+
+                // Single Clean HomeServer PC Tile (Tippen versetzt in 0W Standby oder weckt auf)
+                if selectedRoom == .all || selectedRoom == .living {
+                    let pcOn = sec?.pcOnline ?? false
+                    Button {
+                        Task {
+                            await client.sendJellyAction(pcOn ? "/api/shutdown" : "/api/wake", fallbackMsg: pcOn ? "💤 PC geht in 0W Ruhezustand…" : "⚡ Wake-on-LAN gesendet!")
+                            await client.refreshSmartHome()
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                IconBadge(
+                                    symbol: "desktopcomputer",
+                                    colors: pcOn ? [HubTheme.emerald, .teal] : [.gray, .gray.opacity(0.6)],
+                                    size: 36,
+                                    iconSize: 16
+                                )
+                                Spacer()
+                                StatusBadgePill(text: pcOn ? "~\(sec?.pcWatts ?? 115) W" : "0W AUS", active: pcOn)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("HomeServer PC")
+                                    .font(.system(size: 13, weight: .heavy))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                Text(pcOn ? "\(sec?.pcMode ?? "Server-Modus") • Tippen = 0W Standby" : "Aus • Tippen = Aufwecken")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(12)
+                        .hubCard(cornerRadius: 18, highlight: pcOn ? HubTheme.emerald.opacity(0.45) : nil)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(LinearGradient(colors: [HubTheme.emerald, Color.teal], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 12))
-                    .foregroundStyle(.white)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
         }
-        .padding(14)
-        .hubCard(cornerRadius: 20, highlight: pcOn ? (isServer ? HubTheme.emerald.opacity(0.35) : HubTheme.pink.opacity(0.35)) : nil)
     }
 
     // MARK: - 8. Smart Automations & Native Push Mitteilungen

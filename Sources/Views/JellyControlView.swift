@@ -315,91 +315,112 @@ struct JellyControlView: View {
                 .buttonStyle(.plain)
             }
 
-            // 2 Mode Action Tiles: HomeServer vs Gaming
-            HStack(spacing: 10) {
+            // Symmetrical 2x2 Action Deck (Server, Gaming, RGB DarkRoom, 0W Standby)
+            let actionCols = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+            LazyVGrid(columns: actionCols, spacing: 10) {
+                // 1. Server-Modus
                 Button {
                     Task { await client.setPcMode(serverMode: true) }
                 } label: {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 8) {
                         IconBadge(symbol: "server.rack", colors: [HubTheme.emerald, Color.teal], size: 34, iconSize: 14)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("⚡ Server-Modus")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Server-Modus")
                                 .font(.system(size: 13, weight: .bold))
-                            Text(isOnline && isServerMode ? "Aktiv • Dienste laufen" : "Server starten")
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Text(isOnline && isServerMode ? "Aktiv • Läuft" : "Starten")
                                 .font(.system(size: 10.5))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(isOnline && isServerMode ? HubTheme.emerald : .secondary)
+                                .lineLimit(1)
                         }
                         Spacer(minLength: 0)
                     }
-                    .padding(12)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
                     .hubCard(cornerRadius: 16, highlight: (isOnline && isServerMode) ? HubTheme.emerald : nil)
                 }
                 .buttonStyle(.plain)
 
+                // 2. Gaming-Modus
                 Button {
                     Task { await client.setPcMode(serverMode: false) }
                 } label: {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 8) {
                         IconBadge(symbol: "gamecontroller.fill", colors: [HubTheme.pink, HubTheme.purple], size: 34, iconSize: 14)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("🎮 Gaming-Modus")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Gaming-Modus")
                                 .font(.system(size: 13, weight: .bold))
-                            Text(isOnline && !isServerMode ? "Aktiv • Max FPS" : "Dienste pausieren")
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Text(isOnline && !isServerMode ? "Aktiv • Max FPS" : "Pausieren")
                                 .font(.system(size: 10.5))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(isOnline && !isServerMode ? HubTheme.pink : .secondary)
+                                .lineLimit(1)
                         }
                         Spacer(minLength: 0)
                     }
-                    .padding(12)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
                     .hubCard(cornerRadius: 16, highlight: (isOnline && !isServerMode) ? HubTheme.pink : nil)
                 }
                 .buttonStyle(.plain)
-            }
 
-            // RGB DarkRoom & Hibernate Row
-            HStack(spacing: 10) {
+                // 3. DarkRoom RGB
                 let rgbOff = daemon?.rgbKilled == true
                 Button {
                     Task { await client.sendJellyAction("/api/rgb/toggle", fallbackMsg: "💡 RGB-Beleuchtung umgeschaltet!") }
                 } label: {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 8) {
                         IconBadge(
                             symbol: rgbOff ? "moon.stars.fill" : "lightbulb.fill",
                             colors: rgbOff ? [HubTheme.indigo, HubTheme.purple] : [HubTheme.amber, .orange],
                             size: 34,
-                            iconSize: 15
+                            iconSize: 14
                         )
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(rgbOff ? "RGB Einschalten" : "DarkRoom RGB")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("DarkRoom RGB")
                                 .font(.system(size: 13, weight: .bold))
-                            Text(rgbOff ? "Aktuell AUS (Dark)" : "Tastatur, Maus & GPU aus")
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Text(rgbOff ? "Lichter AUS" : "Lichter AN")
                                 .font(.system(size: 10.5))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(rgbOff ? HubTheme.purple : .secondary)
+                                .lineLimit(1)
                         }
                         Spacer(minLength: 0)
                     }
-                    .padding(12)
-                    .hubCard(cornerRadius: 16)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
+                    .hubCard(cornerRadius: 16, highlight: rgbOff ? HubTheme.purple.opacity(0.8) : nil)
                 }
                 .buttonStyle(.plain)
 
+                // 4. 0W Ruhezustand (Standby)
                 Button {
                     Haptics.warning()
                     showShutdownConfirm = true
                 } label: {
-                    HStack(spacing: 10) {
-                        IconBadge(symbol: "powersleep", colors: [HubTheme.rose, HubTheme.pink], size: 34, iconSize: 15)
-                        VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 8) {
+                        IconBadge(symbol: "powersleep", colors: [HubTheme.rose, HubTheme.pink], size: 34, iconSize: 14)
+                        VStack(alignment: .leading, spacing: 2) {
                             Text("Ruhezustand")
                                 .font(.system(size: 13, weight: .bold))
                                 .foregroundStyle(Color(red: 1.0, green: 0.72, blue: 0.76))
-                            Text("0W Hibernate")
+                                .lineLimit(1)
+                            Text("0W Standby")
                                 .font(.system(size: 10.5))
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                         Spacer(minLength: 0)
                     }
-                    .padding(12)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
                     .hubCard(cornerRadius: 16, highlight: HubTheme.rose.opacity(0.6))
                 }
                 .buttonStyle(.plain)
