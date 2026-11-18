@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import UIKit
+import UserNotifications
 
 enum ConnectionMode: String, CaseIterable, Identifiable {
     case auto = "auto"
@@ -60,6 +61,9 @@ final class HubClient: ObservableObject {
 
     // Smart Home state (HomeKit / HA / WiZ / TECHO5)
     @Published var smartHomeState: SmartHomeStateResponse?
+    private var lastDoorOpen: Bool?
+    private var lastWindowOpen: Bool?
+    private var didRequestNotifAuth: Bool = false
 
     // Deal Radar state
     @Published var dealState: DealStateResponse?
@@ -408,7 +412,7 @@ final class HubClient: ObservableObject {
             let ver: VerResp = try await getJSON("\(sideJITURL)/ver/")
             sideJITOnline = true
             sideJITVersion = "v\(ver.SideJITServer ?? "1.4") (pymd3 \(ver.pymobiledevice3 ?? ""))"
-            await loadSideJITApps(endpoint: "")
+            await loadSideJITApps(triggerRefresh: false)
         } catch {
             sideJITOnline = false
         }
@@ -418,18 +422,28 @@ final class HubClient: ObservableObject {
         isRefreshingJIT = true
         defer { isRefreshingJIT = false }
         Haptics.medium()
-        await loadSideJITApps(endpoint: "/re/")
-        showToast(sideJITApps.isEmpty ? "🔄 JIT-Geräte gesucht (Display entsperren!)" : "✅ \(sideJITApps.count) JIT-Apps bereit!")
+        await loadSideJITApps(triggerRefresh: true)
+        if sideJITApps.isEmpty {
+            showToast("🔄 Suche iPhone… Bitte Display entsperrt lassen!")
+        } else {
+            Haptics.success()
+            showToast("✅ \(sideJITApps.count) JIT-Apps auf deinem iPhone gefunden!")
+        }
     }
 
-    private func loadSideJITApps(endpoint: String) async {
-        guard let url = URL(string: "\(sideJITURL)\(endpoint)") else { return }
+    private func loadSideJITApps(triggerRefresh: Bool) async {
+        if triggerRefresh, let reURL = URL(string: "\(sideJITURL)/re/") {
+            var req = URLRequest(url: reURL)
+            req.timeoutInterval = 18.0
+            _ = try? await session.data(for: req)
+        }
+        guard let url = URL(string: "\(sideJITURL)/\(deviceUDID)/") else { return }
         var req = URLRequest(url: url)
-        req.timeoutInterval = 12.0
+        req.timeoutInterval = 15.0
         do {
             let (data, _) = try await session.data(for: req)
-            if let dict = try? JSONDecoder().decode([String: [JITAppEntry]].self, from: data) {
-                sideJITApps = dict.values.flatMap { $0 }
+            if let list = try? JSONDecoder().decode([JITAppEntry].self, from: data) {
+                sideJITApps = list
             }
         } catch {}
     }
@@ -439,23 +453,75 @@ final class HubClient: ObservableObject {
         let encoded = app.bundle.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? app.bundle
         guard let url = URL(string: "\(sideJITURL)/\(deviceUDID)/\(encoded)/") else { return }
         var req = URLRequest(url: url)
-        req.timeoutInterval = 15.0
+        req.timeoutInterval = 18.0
         do {
-            let (data, _) = try await session.data(for: req)
+            let (data, resp) = try await session.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 200
             let txt = String(data: data, encoding: .utf8) ?? "JIT aktiviert!"
-            Haptics.success()
-            showToast("⚡ \(txt.replacingOccurrences(of: "\"", with: ""))")
+            if code >= 400 || txt.contains("ERROR") || txt.contains("Could not find") {
+                Haptics.warning()
+                showToast("🔄 Verbinde Tunnel neu… Bitte iPhone entsperrt lassen")
+                await loadSideJITApps(triggerRefresh: true)
+                let (data2, _) = try await session.data(for: req)
+                let txt2 = String(data: data2, encoding: .utf8) ?? "JIT aktiviert!"
+                Haptics.success()
+                showToast("⚡ \(txt2.replacingOccurrences(of: "\"", with: ""))")
+            } else {
+                Haptics.success()
+                showToast("⚡ \(txt.replacingOccurrences(of: "\"", with: ""))")
+                await loadSideJITApps(triggerRefresh: false)
+            }
         } catch {
             Haptics.error()
-            showToast("JIT fehlgeschlagen – iPhone entsperrt?")
+            showToast("JIT fehlgeschlagen – iPhone entsperrt & Tailscale aktiv?")
         }
     }
 
     // MARK: - Smart Home API (HomeKit / HA / WiZ / TECHO5)
 
+    private func ensureNotificationAuth() {
+        guard !didRequestNotifAuth else { return }
+        didRequestNotifAuth = true
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+    }
+
+    private func postLocalSensorNotification(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req)
+    }
+
     func refreshSmartHome() async {
+        ensureNotificationAuth()
         do {
             let st: SmartHomeStateResponse = try await getJSON("\(jellyBaseURL)/api/smarthome?t=\(Int(Date().timeIntervalSince1970))")
+            if let prevDoor = lastDoorOpen, prevDoor != st.security.doorOpen {
+                if st.security.doorOpen {
+                    Haptics.warning()
+                    showToast("🚪 Wohnungstür wurde geöffnet!")
+                    postLocalSensorNotification(title: "🚪 Wohnungstür geöffnet", body: "Die Wohnungstür wurde gerade geöffnet.")
+                } else {
+                    Haptics.light()
+                    showToast("🔒 Wohnungstür geschlossen")
+                    postLocalSensorNotification(title: "🔒 Wohnungstür geschlossen", body: "Die Wohnungstür ist wieder geschlossen.")
+                }
+            }
+            if let prevWin = lastWindowOpen, prevWin != st.security.windowOpen {
+                if st.security.windowOpen {
+                    Haptics.warning()
+                    showToast("🪟 Wohnzimmer-Fenster geöffnet!")
+                    postLocalSensorNotification(title: "🪟 Wohnzimmer-Fenster offen", body: "Das Wohnzimmer-Fenster wurde geöffnet (Heizungs-Schutz aktiv).")
+                } else {
+                    Haptics.light()
+                    showToast("✅ Wohnzimmer-Fenster geschlossen")
+                    postLocalSensorNotification(title: "✅ Wohnzimmer-Fenster zu", body: "Das Wohnzimmer-Fenster wurde wieder geschlossen.")
+                }
+            }
+            lastDoorOpen = st.security.doorOpen
+            lastWindowOpen = st.security.windowOpen
             smartHomeState = st
             isConnected = true
         } catch {}

@@ -5,6 +5,7 @@ struct DeviceManagerTabView: View {
     @Environment(\.openURL) private var openURL
 
     @State private var showQuickAdd = false
+    @State private var editingIndex: Int?
     @State private var deleteTargetIndex: Int?
     @State private var deleteTargetName: String = ""
 
@@ -16,9 +17,9 @@ struct DeviceManagerTabView: View {
                     HStack(spacing: 12) {
                         IconBadge(symbol: "slider.horizontal.below.rectangle", colors: [HubTheme.emerald, HubTheme.sky], size: 42, iconSize: 19)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Überwachte Geräte & Preisspannen")
+                            Text("Überwachte Geräte & Filter")
                                 .font(.system(size: 15, weight: .heavy))
-                            Text("Ändere Min/Max-Preise direkt oder füge neue Suchaufträge hinzu.")
+                            Text("Bearbeite Preise, Umkreis (Range), Pflicht- & Ausschluss-Wörter jederzeit im Nachhinein.")
                                 .font(.system(size: 11.5))
                                 .foregroundStyle(.secondary)
                         }
@@ -51,7 +52,7 @@ struct DeviceManagerTabView: View {
 
                     // List of Device Cards
                     if let searches = client.dealConfig?.searches, !searches.isEmpty {
-                        ForEach(Array(searches.enumerated()), id: \.offset) { idx, rule in
+                        ForEach(Array(searches.enumerated()), id: \.element.id) { idx, rule in
                             DeviceRuleCard(
                                 index: idx,
                                 rule: rule,
@@ -70,6 +71,10 @@ struct DeviceManagerTabView: View {
                                             await client.refreshDealState()
                                         }
                                     }
+                                },
+                                onEditFull: {
+                                    Haptics.light()
+                                    editingIndex = idx
                                 },
                                 onDeepScan: {
                                     Task {
@@ -108,7 +113,7 @@ struct DeviceManagerTabView: View {
                 .padding(.bottom, 30)
             }
             .background(HubTheme.bg.ignoresSafeArea())
-            .navigationTitle("Geräte & Preise")
+            .navigationTitle("Geräte & Filter")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -137,6 +142,27 @@ struct DeviceManagerTabView: View {
                     }
                 })
             }
+            .sheet(
+                isPresented: Binding(
+                    get: { editingIndex != nil },
+                    set: { if !$0 { editingIndex = nil } }
+                )
+            ) {
+                if let idx = editingIndex,
+                   let searches = client.dealConfig?.searches,
+                   idx < searches.count {
+                    EditDeviceRuleSheet(
+                        index: idx,
+                        initialRule: searches[idx],
+                        onSaved: {
+                            Task {
+                                await client.fetchDealConfig()
+                                await client.refreshDealState()
+                            }
+                        }
+                    )
+                }
+            }
             .confirmationDialog(
                 "🗑 \"\(deleteTargetName)\" entfernen?",
                 isPresented: Binding(
@@ -163,11 +189,55 @@ struct DeviceManagerTabView: View {
     }
 }
 
+// MARK: - Helper to parse Kleinanzeigen URL metadata
+
+enum KleinanzeigenURLHelper {
+    static func extractRadiusKm(from url: String) -> Int {
+        if let range = url.range(of: #"l\d+r(\d+)"#, options: .regularExpression) {
+            let sub = String(url[range])
+            if let rIdx = sub.lastIndex(of: "r"),
+               let val = Int(sub[sub.index(after: rIdx)...]) {
+                return val
+            }
+        }
+        return 0
+    }
+
+    static func extractCategory(from url: String) -> String {
+        if url.contains("c278") || url.contains("/s-notebooks/") { return "notebooks" }
+        if url.contains("c279") || url.contains("/konsolen/") { return "consoles" }
+        if url.contains("c173") || url.contains("/s-handy-telekom/") { return "phones" }
+        if url.contains("c285") || url.contains("/tablets") { return "tablets" }
+        if url.contains("c228") || url.contains("/s-pcs/") { return "pcs" }
+        if url.contains("c225") { return "hardware" }
+        if url.contains("c245") { return "cameras" }
+        if url.contains("c161") || url.contains("/s-multimedia-elektronik/") { return "electronics" }
+        return "all"
+    }
+
+    static func extractQuery(from url: String, fallbackName: String) -> String {
+        guard let kRange = url.range(of: #"/k0[a-z0-9]*"#, options: .regularExpression) else {
+            return fallbackName
+        }
+        let prefix = String(url[..<kRange.lowerBound])
+        if let lastSlash = prefix.lastIndex(of: "/") {
+            let slug = String(prefix[prefix.index(after: lastSlash)...])
+            if !slug.hasPrefix("preis:") && !slug.hasPrefix("s-") && !slug.isEmpty {
+                return slug.replacingOccurrences(of: "-", with: " ")
+            }
+        }
+        return fallbackName
+    }
+}
+
+// MARK: - Device Rule Card
+
 private struct DeviceRuleCard: View {
     let index: Int
     let rule: SearchRule
     let onSavePrice: (Double, Double) -> Void
     let onToggleEnabled: (Bool) -> Void
+    let onEditFull: () -> Void
     let onDeepScan: () -> Void
     let onOpenURL: () -> Void
     let onDelete: () -> Void
@@ -180,7 +250,7 @@ private struct DeviceRuleCard: View {
         let low = rule.name.lowercased()
         if low.contains("iphone") || low.contains("pixel") || low.contains("galaxy") { return "iphone" }
         if low.contains("ipad") || low.contains("tablet") { return "ipad" }
-        if low.contains("macbook") || low.contains("thinkpad") || low.contains("laptop") { return "laptopcomputer" }
+        if low.contains("macbook") || low.contains("imac") || low.contains("thinkpad") || low.contains("laptop") { return "laptopcomputer" }
         if low.contains("switch") || low.contains("steam") || low.contains("ps5") || low.contains("playstation") { return "gamecontroller.fill" }
         if low.contains("rtx") || low.contains("gpu") || low.contains("rx ") { return "cpu.fill" }
         return "tag.fill"
@@ -192,24 +262,38 @@ private struct DeviceRuleCard: View {
         return [HubTheme.sky, HubTheme.indigo]
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                IconBadge(symbol: deviceSymbol, colors: badgeColors, size: 38, iconSize: 17)
+    private var parsedRadiusLabel: String {
+        if let maxDist = rule.maxDistanceKm, maxDist > 0 {
+            return "📍 \(Int(maxDist)) km"
+        }
+        let r = KleinanzeigenURLHelper.extractRadiusKm(from: rule.url)
+        return r > 0 ? "📍 \(r) km" : "🌍 DE-weit"
+    }
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(rule.name)
-                        .font(.system(size: 15, weight: .heavy))
-                        .foregroundStyle(isOn ? .white : .secondary)
-                    HStack(spacing: 6) {
-                        Text(rule.conditionMode == "defective_only" ? "🔧 Defekt / Bastler" : (rule.conditionMode == "any" ? "🎯 Alle Zustände" : "✅ Funktionierend"))
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(rule.conditionMode == "defective_only" ? HubTheme.amber : HubTheme.emerald)
-                        Text("• \(minVal)–\(maxVal) €")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(HubTheme.sky)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 10) {
+                Button(action: onEditFull) {
+                    HStack(spacing: 10) {
+                        IconBadge(symbol: deviceSymbol, colors: badgeColors, size: 38, iconSize: 17)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(rule.name)
+                                .font(.system(size: 15, weight: .heavy))
+                                .foregroundStyle(isOn ? .white : .secondary)
+                                .lineLimit(1)
+                            HStack(spacing: 6) {
+                                Text(rule.conditionMode == "defective_only" ? "🔧 Defekt / Bastler" : (rule.conditionMode == "any" ? "🎯 Alle" : "✅ Funktionierend"))
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(rule.conditionMode == "defective_only" ? HubTheme.amber : HubTheme.emerald)
+                                Text("• \(parsedRadiusLabel)")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(HubTheme.sky)
+                            }
+                        }
                     }
                 }
+                .buttonStyle(.plain)
 
                 Spacer()
 
@@ -223,6 +307,46 @@ private struct DeviceRuleCard: View {
                     }
             }
 
+            // Keywords & Filter Summary Pills (Tap to open Full Editor)
+            Button(action: onEditFull) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        let reqs = rule.requiredKeywords ?? []
+                        let negs = rule.negativeKeywords ?? []
+
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.seal.fill")
+                            Text(reqs.isEmpty ? "Pflichtwörter: Alle" : "Pflicht: \(reqs.prefix(3).joined(separator: ", "))\(reqs.count > 3 ? " +\(reqs.count - 3)" : "")")
+                        }
+                        .font(.system(size: 10.5, weight: .bold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(HubTheme.emerald.opacity(0.16), in: Capsule())
+                        .foregroundStyle(HubTheme.emerald)
+
+                        HStack(spacing: 4) {
+                            Image(systemName: "nosign")
+                            Text("\(negs.count) Ausschluss-Wörter")
+                        }
+                        .font(.system(size: 10.5, weight: .bold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(HubTheme.rose.opacity(0.15), in: Capsule())
+                        .foregroundStyle(HubTheme.rose)
+
+                        if rule.ignoreCommercial == true {
+                            Text("Privat-Only")
+                                .font(.system(size: 10, weight: .bold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(HubTheme.purple.opacity(0.18), in: Capsule())
+                                .foregroundStyle(HubTheme.purple)
+                        }
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
             // Quick Price Editor Row with +/- Steppers & Direct Number Input
             HStack(spacing: 8) {
                 priceBox(title: "MIN €", value: $minVal, step: 10)
@@ -235,10 +359,10 @@ private struct DeviceRuleCard: View {
                     VStack(spacing: 2) {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 15, weight: .bold))
-                        Text("Speichern")
+                        Text("Preis OK")
                             .font(.system(size: 10, weight: .heavy))
                     }
-                    .frame(width: 74, height: 48)
+                    .frame(width: 70, height: 48)
                     .background(LinearGradient(colors: [HubTheme.sky, HubTheme.indigo], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 12))
                     .foregroundStyle(.white)
                 }
@@ -246,16 +370,32 @@ private struct DeviceRuleCard: View {
             }
 
             // Bottom Action Bar
-            HStack(spacing: 8) {
+            HStack(spacing: 7) {
+                Button {
+                    onEditFull()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "slider.horizontal.3")
+                        Text("Bearbeiten")
+                    }
+                    .font(.system(size: 11.5, weight: .heavy))
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 7)
+                    .background(HubTheme.sky.opacity(0.22), in: RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(HubTheme.sky.opacity(0.55), lineWidth: 1))
+                    .foregroundStyle(HubTheme.sky)
+                }
+                .buttonStyle(.plain)
+
                 Button {
                     onDeepScan()
                 } label: {
-                    HStack(spacing: 5) {
+                    HStack(spacing: 4) {
                         Image(systemName: "sparkle.magnifyingglass")
-                        Text("Alle Seiten scannen")
+                        Text("Tiefenscan")
                     }
                     .font(.system(size: 11.5, weight: .bold))
-                    .padding(.horizontal, 11)
+                    .padding(.horizontal, 10)
                     .padding(.vertical, 7)
                     .background(HubTheme.indigo.opacity(0.22), in: RoundedRectangle(cornerRadius: 9))
                     .overlay(RoundedRectangle(cornerRadius: 9).stroke(HubTheme.indigo.opacity(0.5), lineWidth: 1))
@@ -266,15 +406,12 @@ private struct DeviceRuleCard: View {
                 Button {
                     onOpenURL()
                 } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "safari")
-                        Text("Link")
-                    }
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
-                    .foregroundStyle(.secondary)
+                    Image(systemName: "safari")
+                        .font(.system(size: 12, weight: .bold))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 7)
+                        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
+                        .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
 
@@ -283,16 +420,13 @@ private struct DeviceRuleCard: View {
                 Button {
                     onDelete()
                 } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "trash.fill")
-                        Text("Löschen")
-                    }
-                    .font(.system(size: 11.5, weight: .bold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(HubTheme.rose.opacity(0.18), in: RoundedRectangle(cornerRadius: 9))
-                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(HubTheme.rose.opacity(0.45), lineWidth: 1))
-                    .foregroundStyle(HubTheme.rose)
+                    Image(systemName: "trash.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(HubTheme.rose.opacity(0.18), in: RoundedRectangle(cornerRadius: 9))
+                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(HubTheme.rose.opacity(0.45), lineWidth: 1))
+                        .foregroundStyle(HubTheme.rose)
                 }
                 .buttonStyle(.plain)
             }
@@ -348,6 +482,461 @@ private struct DeviceRuleCard: View {
         .overlay(RoundedRectangle(cornerRadius: 11).stroke(HubTheme.border, lineWidth: 1))
     }
 }
+
+// MARK: - Full Edit Sheet for Any Existing Monitored Device
+
+struct EditDeviceRuleSheet: View {
+    @EnvironmentObject var client: HubClient
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+
+    let index: Int
+    let initialRule: SearchRule
+    let onSaved: () -> Void
+
+    @State private var name: String = ""
+    @State private var query: String = ""
+    @State private var url: String = ""
+    @State private var minPrice: Int = 0
+    @State private var maxPrice: Int = 500
+    @State private var radiusKm: Int = 75
+    @State private var maxDistanceLimitKm: Int = 0
+    @State private var category: String = "all"
+    @State private var conditionMode: String = "working_only"
+    @State private var ignoreCommercial: Bool = false
+    @State private var ignoreWanted: Bool = true
+
+    @State private var requiredWords: [String] = []
+    @State private var newRequiredInput: String = ""
+
+    @State private var negativeWords: [String] = []
+    @State private var newNegativeInput: String = ""
+    @State private var negFilterText: String = ""
+    @State private var showRawNegEditor: Bool = false
+    @State private var rawNegCsv: String = ""
+
+    @State private var titleNegativeCsv: String = ""
+    @State private var runDeepScanAfterSave: Bool = false
+    @State private var isSaving: Bool = false
+    @State private var didAppear: Bool = false
+
+    private let radii = [
+        (20, "20 km (Frankfurt)"),
+        (30, "30 km"),
+        (50, "50 km"),
+        (75, "75 km (Rhein-Main)"),
+        (100, "100 km"),
+        (150, "150 km"),
+        (200, "200 km"),
+        (0, "Deutschlandweit (DE)")
+    ]
+
+    private let categories = [
+        ("all", "Alle Kategorien"),
+        ("electronics", "Elektronik"),
+        ("notebooks", "Notebooks / MacBooks"),
+        ("consoles", "Konsolen"),
+        ("phones", "Handy & Telefon"),
+        ("tablets", "Tablets & iPads"),
+        ("pcs", "PCs"),
+        ("hardware", "PC-Hardware / GPUs"),
+        ("cameras", "Foto & Kameras")
+    ]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("1. Gerätename & Suchbegriff") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Anzeigename")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.secondary)
+                        TextField("Name (z. B. PlayStation 5 Konsole)", text: $name)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Kleinanzeigen-Suchbegriff (aktualisiert URL)")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.secondary)
+                        HStack {
+                            TextField("Suchbegriff (z. B. ps5)", text: $query)
+                                .autocorrectionDisabled()
+                            Button("URL neu bauen") {
+                                Haptics.light()
+                                rebuildURLFromFields()
+                            }
+                            .font(.caption.bold())
+                            .buttonStyle(.borderedProminent)
+                            .tint(HubTheme.sky)
+                        }
+                    }
+                }
+
+                Section("2. Umkreis (Range), Kategorie & Preisspanne") {
+                    Picker("Such-Umkreis (Kleinanzeigen)", selection: $radiusKm) {
+                        ForEach(radii, id: \.0) { r, lbl in Text(lbl).tag(r) }
+                    }
+                    .onChange(of: radiusKm) { _, newR in
+                        guard didAppear else { return }
+                        updateRadiusInNameAndURL(newRadius: newR)
+                    }
+
+                    Stepper(value: $maxDistanceLimitKm, in: 0...500, step: 10) {
+                        HStack {
+                            Text("Strikter Distanz-Filter")
+                            Spacer()
+                            Text(maxDistanceLimitKm == 0 ? "Wie Umkreis" : "max. \(maxDistanceLimitKm) km")
+                                .font(.caption.bold())
+                                .foregroundStyle(HubTheme.sky)
+                        }
+                    }
+
+                    Picker("Kategorie", selection: $category) {
+                        ForEach(categories, id: \.0) { c, lbl in Text(lbl).tag(c) }
+                    }
+                    .onChange(of: category) { _, _ in
+                        guard didAppear else { return }
+                        rebuildURLFromFields()
+                    }
+
+                    HStack {
+                        Text("Min Preis (€)")
+                        Spacer()
+                        TextField("Min", value: $minPrice, format: .number)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 90)
+                    }
+                    .onChange(of: minPrice) { _, _ in
+                        guard didAppear else { return }
+                        rebuildURLFromFields()
+                    }
+
+                    HStack {
+                        Text("Max Preis (€)")
+                        Spacer()
+                        TextField("Max", value: $maxPrice, format: .number)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 90)
+                    }
+                    .onChange(of: maxPrice) { _, _ in
+                        guard didAppear else { return }
+                        rebuildURLFromFields()
+                    }
+                }
+
+                Section("3. Zustands-Modus & Anbieter") {
+                    Picker("Zustand", selection: $conditionMode) {
+                        Text("✅ Funktionierend").tag("working_only")
+                        Text("🔧 Defekt / Bastler").tag("defective_only")
+                        Text("🎯 Alle").tag("any")
+                    }
+                    .pickerStyle(.segmented)
+
+                    Toggle("Gewerbliche Anbieter (PRO) ignorieren", isOn: $ignoreCommercial)
+                    Toggle("Gesuche ('Suche...') ignorieren", isOn: $ignoreWanted)
+                }
+
+                Section {
+                    HStack {
+                        TextField("Neues Pflicht-Wort (oder kommagetrennt)", text: $newRequiredInput)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                        Button {
+                            addRequiredWords()
+                        } label: {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(HubTheme.emerald)
+                        }
+                        .disabled(newRequiredInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+
+                    if requiredWords.isEmpty {
+                        Text("Keine Pflicht-Keywords aktiv (jedes Inserat aus der Suche wird geprüft).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        FlowChipGrid(words: requiredWords, color: HubTheme.emerald) { wordToRemove in
+                            Haptics.light()
+                            requiredWords.removeAll { $0.lowercased() == wordToRemove.lowercased() }
+                        }
+                        Button(role: .destructive) {
+                            Haptics.warning()
+                            requiredWords.removeAll()
+                        } label: {
+                            Text("Alle Pflicht-Keywords leeren")
+                                .font(.caption)
+                        }
+                    }
+                } header: {
+                    Text("4. Pflicht-Keywords (\(requiredWords.count)) – Mindestens 1 muss vorkommen")
+                }
+
+                Section {
+                    HStack {
+                        TextField("Wort ausschließen (z. B. hülle, karton)", text: $newNegativeInput)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                        Button {
+                            addNegativeWords()
+                        } label: {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(HubTheme.rose)
+                        }
+                        .disabled(newNegativeInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+
+                    if !negativeWords.isEmpty {
+                        TextField("🔍 In \(negativeWords.count) Ausschluss-Wörtern filtern…", text: $negFilterText)
+                            .font(.caption)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+
+                        let filtered = negFilterText.trimmingCharacters(in: .whitespaces).isEmpty
+                            ? negativeWords
+                            : negativeWords.filter { $0.localizedCaseInsensitiveContains(negFilterText) }
+
+                        FlowChipGrid(words: filtered, color: HubTheme.rose) { wordToRemove in
+                            Haptics.light()
+                            negativeWords.removeAll { $0.lowercased() == wordToRemove.lowercased() }
+                            rawNegCsv = negativeWords.joined(separator: ", ")
+                        }
+                    }
+
+                    DisclosureGroup("Als kommagetrennten Text bearbeiten", isExpanded: $showRawNegEditor) {
+                        TextEditor(text: $rawNegCsv)
+                            .frame(minHeight: 80)
+                            .font(.caption.monospaced())
+                            .onChange(of: rawNegCsv) { _, newVal in
+                                negativeWords = splitCsv(newVal)
+                            }
+                    }
+                    .font(.caption)
+                } header: {
+                    Text("5. Ausschluss-Keywords (\(negativeWords.count)) – Tippen auf × zum Löschen")
+                }
+
+                Section("6. Titel-Ausschluss & Direkt-URL") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Nur im Titel verbotene Wörter (kommagetrennt, optional)")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.secondary)
+                        TextField("z. B. hülle, tasche, defekt", text: $titleNegativeCsv)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Kleinanzeigen Such-URL")
+                            .font(.caption2.bold())
+                            .foregroundStyle(.secondary)
+                        TextField("https://www.kleinanzeigen.de/...", text: $url)
+                            .font(.caption2.monospaced())
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                    }
+
+                    if let testURL = URL(string: url), !url.isEmpty {
+                        Button {
+                            openURL(testURL)
+                        } label: {
+                            Label("Such-URL in Safari testen", systemImage: "safari")
+                                .font(.caption.bold())
+                        }
+                    }
+                }
+
+                Section {
+                    Toggle("🔎 Nach dem Speichern direkt Tiefenscan starten", isOn: $runDeepScanAfterSave)
+                }
+            }
+            .navigationTitle("Gerät bearbeiten")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Abbrechen") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Speichern") {
+                        Task { await saveChanges() }
+                    }
+                    .bold()
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || url.trimmingCharacters(in: .whitespaces).isEmpty || isSaving)
+                }
+            }
+            .onAppear {
+                guard !didAppear else { return }
+                name = initialRule.name
+                url = initialRule.url
+                minPrice = Int((initialRule.minPrice ?? 0).rounded())
+                maxPrice = Int((initialRule.maxPrice ?? 500).rounded())
+                radiusKm = KleinanzeigenURLHelper.extractRadiusKm(from: initialRule.url)
+                maxDistanceLimitKm = Int((initialRule.maxDistanceKm ?? 0).rounded())
+                category = KleinanzeigenURLHelper.extractCategory(from: initialRule.url)
+                query = KleinanzeigenURLHelper.extractQuery(from: initialRule.url, fallbackName: initialRule.name)
+                conditionMode = initialRule.conditionMode ?? "working_only"
+                ignoreCommercial = initialRule.ignoreCommercial ?? false
+                ignoreWanted = initialRule.ignoreWanted ?? true
+                requiredWords = initialRule.requiredKeywords ?? []
+                negativeWords = initialRule.negativeKeywords ?? []
+                rawNegCsv = negativeWords.joined(separator: ", ")
+                titleNegativeCsv = (initialRule.titleNegativeKeywords ?? []).joined(separator: ", ")
+                didAppear = true
+            }
+        }
+    }
+
+    private func splitCsv(_ s: String) -> [String] {
+        var seen = Set<String>()
+        var res: [String] = []
+        for part in s.split(separator: ",") {
+            let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let low = trimmed.lowercased()
+            if !seen.contains(low) {
+                seen.insert(low)
+                res.append(trimmed)
+            }
+        }
+        return res
+    }
+
+    private func addRequiredWords() {
+        Haptics.light()
+        let added = splitCsv(newRequiredInput)
+        for w in added {
+            if !requiredWords.contains(where: { $0.lowercased() == w.lowercased() }) {
+                requiredWords.append(w)
+            }
+        }
+        newRequiredInput = ""
+    }
+
+    private func addNegativeWords() {
+        Haptics.light()
+        let added = splitCsv(newNegativeInput)
+        for w in added {
+            if !negativeWords.contains(where: { $0.lowercased() == w.lowercased() }) {
+                negativeWords.insert(w, at: 0)
+            }
+        }
+        rawNegCsv = negativeWords.joined(separator: ", ")
+        newNegativeInput = ""
+    }
+
+    private func updateRadiusInNameAndURL(newRadius: Int) {
+        // Also update "(75 km)" or "(DE)" in name if present
+        let newSuffix = newRadius > 0 ? "(\(newRadius) km)" : "(DE)"
+        if let r = name.range(of: #"\((\d+\s*km|DE)\)"#, options: .regularExpression) {
+            name.replaceSubrange(r, with: newSuffix)
+        }
+        rebuildURLFromFields()
+    }
+
+    private func rebuildURLFromFields() {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return }
+        Task {
+            if let built = await client.buildKleinanzeigenURL(
+                query: q,
+                minPrice: minPrice,
+                maxPrice: maxPrice,
+                radiusKm: radiusKm,
+                category: category
+            ) {
+                url = built
+            }
+        }
+    }
+
+    private func saveChanges() async {
+        // Include any unsubmitted text still typed in the add boxes
+        if !newRequiredInput.trimmingCharacters(in: .whitespaces).isEmpty {
+            addRequiredWords()
+        }
+        if !newNegativeInput.trimmingCharacters(in: .whitespaces).isEmpty {
+            addNegativeWords()
+        }
+
+        isSaving = true
+        defer { isSaving = false }
+
+        if client.dealConfig == nil {
+            await client.fetchDealConfig()
+        }
+        guard var cfg = client.dealConfig, index < cfg.searches.count else {
+            client.showToast("Konfiguration konnte nicht geladen werden")
+            return
+        }
+
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let trimmedURL = url.trimmingCharacters(in: .whitespaces)
+        let titleNegList = splitCsv(titleNegativeCsv)
+
+        let updatedRule = SearchRule(
+            name: trimmedName,
+            enabled: cfg.searches[index].enabled ?? true,
+            url: trimmedURL,
+            minPrice: Double(minPrice),
+            maxPrice: Double(maxPrice),
+            conditionMode: conditionMode,
+            ignoreWanted: ignoreWanted,
+            ignoreCommercial: ignoreCommercial,
+            requiredKeywords: requiredWords,
+            negativeKeywords: negativeWords,
+            titleNegativeKeywords: titleNegList.isEmpty ? nil : titleNegList,
+            maxDistanceKm: maxDistanceLimitKm > 0 ? Double(maxDistanceLimitKm) : nil
+        )
+
+        cfg.searches[index] = updatedRule
+        if await client.saveDealConfig(cfg) {
+            client.showToast("✅ \"\(trimmedName)\" gespeichert!")
+            if runDeepScanAfterSave {
+                await client.triggerDealScan(deep: true, searchName: trimmedName)
+            }
+            onSaved()
+            dismiss()
+        }
+    }
+}
+
+// MARK: - Interactive Chip Grid for Keywords
+
+private struct FlowChipGrid: View {
+    let words: [String]
+    let color: Color
+    let onRemove: (String) -> Void
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 95), spacing: 6)], alignment: .leading, spacing: 6) {
+            ForEach(words, id: \.self) { word in
+                Button {
+                    onRemove(word)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(word)
+                            .font(.system(size: 11.5, weight: .bold))
+                            .lineLimit(1)
+                        Spacer(minLength: 2)
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(color.opacity(0.16), in: Capsule())
+                    .overlay(Capsule().stroke(color.opacity(0.45), lineWidth: 1))
+                    .foregroundStyle(color)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Quick Add New Device Sheet
 
 struct QuickAddDeviceSheet: View {
     @EnvironmentObject var client: HubClient

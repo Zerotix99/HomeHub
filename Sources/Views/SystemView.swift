@@ -124,8 +124,26 @@ struct SystemView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                StatusBadgePill(text: "v3.1", active: true, activeColor: HubTheme.sky)
+                StatusBadgePill(text: "v3.2", active: true, activeColor: HubTheme.sky)
             }
+
+            // Cellular Refresh Tip Banner
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "antenna.radiowaves.left.and.right.circle.fill")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(HubTheme.emerald)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Ohne WLAN per 5G/LTE in SideStore refreshen:")
+                        .font(.system(size: 11.5, weight: .heavy))
+                        .foregroundStyle(.white)
+                    Text("Aktiviere in SideStore → Settings → Experimental Features (ganz unten) einmalig den Schalter „Cellular Refresh“.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(10)
+            .background(HubTheme.emerald.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(HubTheme.emerald.opacity(0.35), lineWidth: 1))
 
             // 1-Tap SideStore Install / Update
             Button {
