@@ -132,10 +132,12 @@ final class HubClient: NSObject, ObservableObject, UNUserNotificationCenterDeleg
     }
 
     func pollPiNotifications() async {
-        guard isConnected || connectionMode != .auto else { return }
+        if !isConnected {
+            await resolveActiveHost()
+        }
         guard let url = URL(string: "\(jellyBaseURL)/api/notifications?since=\(String(format: "%.3f", lastNotifTimestamp))") else { return }
         var req = URLRequest(url: url)
-        req.timeoutInterval = 2.5
+        req.timeoutInterval = 3.5
         do {
             let (data, resp) = try await session.data(for: req)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return }

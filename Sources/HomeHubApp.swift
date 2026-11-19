@@ -10,6 +10,8 @@ struct HomeHubApp: App {
         tabAppearance.backgroundColor = UIColor(red: 0.04, green: 0.06, blue: 0.11, alpha: 0.96)
         UITabBar.appearance().standardAppearance = tabAppearance
         UITabBar.appearance().scrollEdgeAppearance = tabAppearance
+
+        BackgroundKeepAlive.shared.start()
     }
 
     var body: some Scene {
